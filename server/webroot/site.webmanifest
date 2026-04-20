@@ -1,0 +1,25 @@
+{
+  "name": "Rosemary",
+  "short_name": "Rosemary",
+  "description": "Cross-platform transparent tunneling platform",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "theme_color": "#2C002F",
+  "background_color": "#2C002F",
+  "display": "standalone",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "orientation": "any"
+}

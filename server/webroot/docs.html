@@ -1,0 +1,1566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16x16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32x32.png">
+<link rel="shortcut icon" href="/icons/favicon.ico">
+
+ 
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+
+
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rosemary API Docs</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+/* ── Page layout ─────────────────────────────────────────────────────────── */
+body { padding: 0; margin: 0; }
+
+.docs-layout {
+    display: flex;
+    min-height: 100vh;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+.docs-sidebar {
+    width: 230px;
+    flex-shrink: 0;
+    background-color: var(--surface-color);
+    border-right: 1px solid var(--border-color);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 2px 0 12px var(--shadow-color);
+    z-index: 10;
+}
+
+.sidebar-brand {
+    padding: 22px 20px 18px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.sidebar-brand-title {
+    font-size: 1.5em;
+    font-weight: 800;
+    color: var(--primary-color);
+    text-shadow: 1px 1px 6px var(--glow-color);
+    letter-spacing: -0.5px;
+}
+
+.sidebar-brand-sub {
+    font-size: 0.72em;
+    color: var(--light-text-color);
+    margin-top: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    font-weight: 600;
+}
+
+.sidebar-nav { padding: 10px 0 20px; flex: 1; }
+
+.nav-section-label {
+    font-size: 0.65em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--light-text-color);
+    padding: 12px 20px 4px;
+    opacity: 0.7;
+}
+
+.nav-link {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 20px;
+    color: var(--light-text-color);
+    text-decoration: none;
+    font-size: 0.85em;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    border-left: 3px solid transparent;
+    cursor: pointer;
+}
+
+.nav-link:hover {
+    color: var(--text-color);
+    background-color: var(--table-hover-bg);
+    border-left-color: var(--secondary-color);
+}
+
+.nav-link.active {
+    color: var(--primary-color);
+    background-color: var(--table-even-row-bg);
+    border-left-color: var(--primary-color);
+    font-weight: 600;
+}
+
+.nav-badge {
+    margin-left: auto;
+    font-size: 0.65em;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.badge-read   { background: rgba(46,204,113,0.18); color: var(--success-color); }
+.badge-write  { background: rgba(255,193,7,0.18);  color: #e6a800; }
+.badge-admin  { background: rgba(220,20,60,0.18);  color: var(--danger-color); }
+.badge-cookie { background: rgba(255,105,180,0.18); color: var(--primary-color); }
+
+/* ── Main ────────────────────────────────────────────────────────────────── */
+.docs-main { flex: 1; min-width: 0; background-color: var(--background-color); }
+
+/* ── Topbar ──────────────────────────────────────────────────────────────── */
+.docs-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background-color: var(--surface-color);
+    border-bottom: 1px solid var(--border-color);
+    box-shadow: 0 2px 8px var(--shadow-color);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 32px;
+    height: 52px;
+}
+
+.topbar-breadcrumb {
+    font-size: 0.82em;
+    color: var(--light-text-color);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.topbar-breadcrumb .sep { opacity: 0.4; }
+.topbar-breadcrumb .cur { color: var(--primary-color); font-weight: 600; }
+
+.topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+/* ── Light / Dark toggle buttons ─────────────────────────────────────────── */
+.theme-toggle-btn {
+    background-color: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 0.78em;
+    font-weight: 600;
+    color: var(--primary-color);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.theme-toggle-btn:hover {
+    background-color: var(--primary-color);
+    color: var(--button-text-color);
+    box-shadow: 0 2px 8px var(--glow-color);
+    border-color: var(--primary-color);
+}
+
+.dash-back-btn {
+    background-color: var(--surface-color);
+    color: var(--primary-color);
+    border: 1px solid var(--border-color);
+    padding: 6px 14px;
+    border-radius: 8px;
+    font-size: 0.78em;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.2s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+.dash-back-btn:hover {
+    background-color: var(--primary-color);
+    color: var(--button-text-color);
+    box-shadow: 0 2px 8px var(--glow-color);
+}
+
+/* ── Content ─────────────────────────────────────────────────────────────── */
+.docs-content {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 36px 36px 100px;
+}
+
+/* ── Hero ────────────────────────────────────────────────────────────────── */
+.docs-hero {
+    background-color: var(--surface-color);
+    border-radius: 12px;
+    box-shadow: 0 8px 25px var(--shadow-color);
+    padding: 32px 36px;
+    margin-bottom: 36px;
+    border-top: 3px solid var(--primary-color);
+    position: relative;
+    overflow: hidden;
+}
+.docs-hero::after {
+    content: '{ }';
+    position: absolute;
+    right: 32px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 5em;
+    font-family: monospace;
+    color: var(--border-color);
+    font-weight: 800;
+    pointer-events: none;
+}
+.docs-hero h1 {
+    text-align: left;
+    font-size: 2em;
+    margin-bottom: 8px;
+    text-shadow: 2px 2px 8px var(--glow-color);
+}
+.docs-hero p {
+    color: var(--light-text-color);
+    font-size: 0.95em;
+    margin: 0;
+    max-width: 560px;
+}
+.version-pill {
+    display: inline-block;
+    background: rgba(255,105,180,0.15);
+    color: var(--primary-color);
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    padding: 2px 10px;
+    font-size: 0.72em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 10px;
+}
+
+/* ── Section anchor offset ───────────────────────────────────────────────── */
+.section { scroll-margin-top: 68px; margin-bottom: 48px; }
+
+/* ── Section headings ────────────────────────────────────────────────────── */
+.docs-content h2 {
+    font-size: 1.5em;
+    margin-top: 0;
+}
+.docs-content h3 {
+    font-size: 0.78em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--light-text-color);
+    margin-top: 20px;
+    margin-bottom: 8px;
+}
+
+/* ── Callout boxes ───────────────────────────────────────────────────────── */
+.callout {
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+    font-size: 0.88em;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    border-left: 4px solid;
+    line-height: 1.6;
+}
+.callout-icon { flex-shrink: 0; font-size: 1em; margin-top: 1px; }
+.callout.info   { background: rgba(255,105,180,0.08); border-color: var(--primary-color);  color: var(--text-color); }
+.callout.warn   { background: rgba(255,193,7,0.1);    border-color: #e6a800;               color: var(--text-color); }
+.callout.admin  { background: rgba(220,20,60,0.08);   border-color: var(--danger-color);   color: var(--text-color); }
+.callout.ok     { background: rgba(46,204,113,0.08);  border-color: var(--success-color);  color: var(--text-color); }
+
+/* ── Permission matrix ───────────────────────────────────────────────────── */
+.perm-matrix {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-bottom: 20px;
+}
+.perm-card {
+    background-color: var(--surface-color);
+    border-radius: 10px;
+    padding: 16px;
+    box-shadow: 0 4px 12px var(--shadow-color);
+    border-top: 3px solid;
+}
+.perm-card.read   { border-color: var(--success-color); }
+.perm-card.write  { border-color: #e6a800; }
+.perm-card.admin  { border-color: var(--danger-color); }
+.perm-card-title {
+    font-size: 0.82em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 8px;
+}
+.perm-card.read  .perm-card-title { color: var(--success-color); }
+.perm-card.write .perm-card-title { color: #e6a800; }
+.perm-card.admin .perm-card-title { color: var(--danger-color); }
+.perm-card ul { list-style: none; padding: 0; margin: 0; }
+.perm-card li {
+    font-size: 0.82em;
+    color: var(--light-text-color);
+    padding: 2px 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.perm-card li::before { content: '›'; color: var(--primary-color); font-weight: 700; }
+
+/* ── Endpoint card ───────────────────────────────────────────────────────── */
+.endpoint {
+    background-color: var(--surface-color);
+    border-radius: 10px;
+    box-shadow: 0 4px 15px var(--shadow-color);
+    margin-bottom: 12px;
+    overflow: hidden;
+    transition: box-shadow 0.2s ease;
+}
+.endpoint:hover { box-shadow: 0 6px 20px var(--shadow-color); }
+
+.endpoint-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 18px;
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.15s ease;
+}
+.endpoint-header:hover { background-color: var(--table-hover-bg); }
+.endpoint.open .endpoint-header { background-color: var(--table-even-row-bg); }
+
+.endpoint-body {
+    border-top: 1px solid var(--border-color);
+    padding: 20px 18px;
+    display: none;
+}
+.endpoint.open .endpoint-body { display: block; }
+
+.method-badge {
+    font-size: 0.7em;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 5px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    min-width: 52px;
+    text-align: center;
+    flex-shrink: 0;
+}
+.GET    { background: rgba(46,204,113,0.15);  color: var(--success-color); }
+.POST   { background: rgba(255,105,180,0.15); color: var(--primary-color); }
+.DELETE { background: rgba(220,20,60,0.15);   color: var(--danger-color); }
+.PATCH  { background: rgba(255,193,7,0.15);   color: #e6a800; }
+
+.endpoint-path {
+    font-family: 'Consolas', 'Fira Mono', monospace;
+    font-size: 0.88em;
+    color: var(--text-color);
+    font-weight: 600;
+    flex: 1;
+}
+.endpoint-path .param { color: var(--secondary-color); }
+.endpoint-path .query { color: var(--light-text-color); }
+
+.endpoint-summary {
+    font-size: 0.78em;
+    color: var(--light-text-color);
+    margin-left: auto;
+    text-align: right;
+    max-width: 180px;
+}
+
+.perm-tag {
+    font-size: 0.65em;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+}
+
+.chevron {
+    color: var(--light-text-color);
+    font-size: 0.75em;
+    transition: transform 0.2s ease;
+    flex-shrink: 0;
+}
+.endpoint.open .chevron { transform: rotate(90deg); }
+
+/* ── Param table ─────────────────────────────────────────────────────────── */
+.param-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 16px;
+    font-size: 0.84em;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px var(--shadow-color);
+}
+.param-table th {
+    background-color: var(--primary-color);
+    color: var(--button-text-color);
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 0.75em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    font-weight: 700;
+}
+.param-table td {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: top;
+}
+.param-table tr:last-child td { border-bottom: none; }
+.param-table tr:nth-child(even) { background-color: var(--table-even-row-bg); }
+.param-table tr:hover { background-color: var(--table-hover-bg); }
+.param-name { font-family: 'Consolas', 'Fira Mono', monospace; color: var(--primary-color); font-weight: 600; }
+.param-type { font-family: 'Consolas', 'Fira Mono', monospace; color: var(--accent-color); font-size: 0.9em; }
+.param-req  { font-size: 0.72em; font-weight: 700; color: var(--danger-color); text-transform: uppercase; }
+.param-opt  { font-size: 0.72em; color: var(--light-text-color); text-transform: uppercase; }
+
+/* ── Code blocks ─────────────────────────────────────────────────────────── */
+.code-wrap { position: relative; margin-bottom: 16px; }
+.code-label {
+    font-size: 0.7em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--light-text-color);
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+pre {
+    background-color: var(--background-color);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-family: 'Consolas', 'Fira Mono', 'Courier New', monospace;
+    font-size: 0.84em;
+    line-height: 1.65;
+    color: var(--text-color);
+    margin: 0;
+}
+
+.copy-btn {
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    padding: 3px 9px;
+    font-size: 0.7em;
+    font-weight: 600;
+    color: var(--light-text-color);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+.copy-btn:hover { color: var(--primary-color); border-color: var(--primary-color); background-color: var(--table-hover-bg); }
+.copy-btn.copied { color: var(--success-color); border-color: var(--success-color); }
+
+/* Syntax highlight colours */
+.sh-key  { color: var(--primary-color); }
+.sh-str  { color: var(--success-color); }
+.sh-num  { color: var(--accent-color); }
+.sh-cmt  { color: var(--light-text-color); font-style: italic; }
+.sh-meth { color: #e6a800; font-weight: 700; }
+.sh-url  { color: var(--secondary-color); }
+
+/* ── Response codes ──────────────────────────────────────────────────────── */
+.resp-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.resp-chip {
+    font-family: 'Consolas', monospace;
+    font-size: 0.78em;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 6px;
+}
+.resp-2xx { background: rgba(46,204,113,0.15);  color: var(--success-color); }
+.resp-4xx { background: rgba(255,193,7,0.15);   color: #e6a800; }
+.resp-5xx { background: rgba(220,20,60,0.15);   color: var(--danger-color); }
+
+/* ── inline code ─────────────────────────────────────────────────────────── */
+code {
+    font-family: 'Consolas', 'Fira Mono', monospace;
+    font-size: 0.85em;
+    background-color: var(--table-even-row-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--primary-color);
+}
+
+/* ── Scrollbar themed ────────────────────────────────────────────────────── */
+.docs-sidebar::-webkit-scrollbar { width: 6px; }
+.docs-sidebar::-webkit-scrollbar-thumb { background: var(--primary-color); border-radius: 6px; }
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .docs-sidebar { display: none; }
+    .docs-content { padding: 20px 16px 80px; }
+    .perm-matrix { grid-template-columns: 1fr; }
+    .endpoint-summary { display: none; }
+    .docs-hero::after { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="docs-layout">
+
+<!-- ══════════════════ SIDEBAR ══════════════════ -->
+<nav class="docs-sidebar">
+    <div class="sidebar-brand">
+        <div class="sidebar-brand-title"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:6px"><path d="M3 17c0-4 3.6-8 9-8s9 4 9 8"/><path d="M3 17h18"/><path d="M9 17c0-2 1.3-4 3-4s3 2 3 4"/></svg>Rosemary</div>
+        <div class="sidebar-brand-sub">API Reference v1</div>
+    </div>
+    <div class="sidebar-nav">
+        <div class="nav-section-label">Overview</div>
+        <a class="nav-link active" onclick="scrollToSection('auth')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>Authentication</a>
+        <a class="nav-link" onclick="scrollToSection('errors')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Errors</a>
+
+        <div class="nav-section-label">Read Endpoints</div>
+        <a class="nav-link" onclick="scrollToSection('status')">Status <span class="nav-badge badge-read">read</span></a>
+        <a class="nav-link" onclick="scrollToSection('agents')">Agents <span class="nav-badge badge-read">read</span></a>
+        <div class="nav-section-label">Write Endpoints</div>
+        <a class="nav-link" onclick="scrollToSection('routes')">Routes <span class="nav-badge badge-write">write</span></a>
+        <a class="nav-link" onclick="scrollToSection('forwards')">Port Forwards <span class="nav-badge badge-write">write</span></a>
+        <a class="nav-link" onclick="scrollToSection('rforwards')">Reverse Forwards <span class="nav-badge badge-write">write</span></a>
+        <a class="nav-link" onclick="scrollToSection('socks')">SOCKS Proxies <span class="nav-badge badge-write">write</span></a>
+
+        <div class="nav-section-label">Admin Endpoints</div>
+        <a class="nav-link" onclick="scrollToSection('connect-bind')">Bind Connect <span class="nav-badge badge-admin">admin</span></a>
+        <a class="nav-link" onclick="scrollToSection('cli')">CLI <span class="nav-badge badge-admin">admin</span></a>
+        <a class="nav-link" onclick="scrollToSection('settings')">Settings <span class="nav-badge badge-admin">admin</span></a>
+        <a class="nav-link" onclick="scrollToSection('tokens')">Tokens <span class="nav-badge badge-admin">admin</span></a>
+        <a class="nav-link" onclick="scrollToSection('agent-actions')">Agent Actions <span class="nav-badge badge-write">write</span></a>
+    </div>
+</nav>
+
+<!-- ══════════════════ MAIN ══════════════════ -->
+<div class="docs-main">
+    <!-- Topbar -->
+    <div class="docs-topbar">
+        <div class="topbar-breadcrumb">
+            <span>Rosemary</span>
+            <span class="sep">/</span>
+            <span class="cur">API Docs</span>
+        </div>
+        <div class="topbar-actions">
+            <button class="theme-toggle-btn" id="theme-toggle-btn" onclick="toggleTheme()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg> <span id="theme-label"></span></button>
+            <a class="dash-back-btn" href="/dashboard"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><polyline points="15 18 9 12 15 6"/></svg>Dashboard</a>
+        </div>
+    </div>
+
+    <!-- Content -->
+    <div class="docs-content">
+
+        <!-- Hero -->
+        <div class="docs-hero">
+            <div class="version-pill">REST API v1</div>
+            <h1>API Reference</h1>
+            <p>All <code>/api/v1/</code> endpoints take JSON bodies and return JSON. Auth is Bearer token only.</p>
+        </div>
+
+        <!-- ── Authentication ─────────────────────────────────────────── -->
+        <div class="section" id="auth">
+            <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>Authentication</h2>
+
+            <p>Every <code>/api/v1/</code> request needs an <code>Authorization: Bearer &lt;token&gt;</code> header. No session cookie support.</p>
+
+            <div class="code-wrap">
+                <div class="code-label">Bearer token</div>
+                <pre><span class="sh-meth">curl</span> -H <span class="sh-str">"Authorization: Bearer tun_&lt;your-token&gt;"</span> \
+     http://localhost:1024/api/v1/status</pre>
+            </div>
+
+            <h3>Permission levels</h3>
+            <div class="perm-matrix">
+                <div class="perm-card read">
+                    <div class="perm-card-title">read</div>
+                    <ul>
+                        <li>GET /api/v1/status</li>
+                        <li>GET /api/v1/agents</li>
+                        <li>GET /api/v1/routes</li>
+                        <li>GET /api/v1/agents/{id}</li>
+                    </ul>
+                </div>
+                <div class="perm-card write">
+                    <div class="perm-card-title">write</div>
+                    <ul>
+                        <li>All read permissions</li>
+                        <li>Port forwards CRUD</li>
+                        <li>Reverse forwards CRUD</li>
+                        <li>SOCKS proxies CRUD</li>
+                        <li>Agent tag / ping / scan</li>
+                    </ul>
+                </div>
+                <div class="perm-card admin">
+                    <div class="perm-card-title">admin</div>
+                    <ul>
+                        <li>All write permissions</li>
+                        <li>Bind connect control</li>
+                        <li>CLI command execution</li>
+                        <li>Server settings</li>
+                        <li>Token management</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="callout admin">
+                <span class="callout-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+                <div>Token management endpoints (<code>/api/v1/tokens</code>) require <strong>admin</strong> permission. Guard your admin tokens carefully they can create and revoke other tokens.</div>
+            </div>
+        </div>
+
+        <!-- ── Errors ─────────────────────────────────────────────────── -->
+        <div class="section" id="errors">
+            <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>Error Responses</h2>
+            <p>All errors return a JSON body with an <code>error</code> field and an appropriate HTTP status code.</p>
+            <div class="code-wrap">
+                <div class="code-label">Error body</div>
+                <pre>{<span class="sh-key">"error"</span>: <span class="sh-str">"agent_not_found"</span>}</pre>
+            </div>
+            <table class="param-table">
+                <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+                <tbody>
+                    <tr><td><span class="param-type">401</span></td><td>Bad or missing token</td></tr>
+                    <tr><td><span class="param-type">403</span></td><td>Token does not have the required permission</td></tr>
+                    <tr><td><span class="param-type">404</span></td><td>Resource not found</td></tr>
+                    <tr><td><span class="param-type">405</span></td><td>Method not allowed</td></tr>
+                    <tr><td><span class="param-type">409</span></td><td>Conflict, e.g. port in use</td></tr>
+                    <tr><td><span class="param-type">500</span></td><td>Internal server error</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- ── Status ─────────────────────────────────────────────────── -->
+        <div class="section" id="status">
+            <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Status</h2>
+
+            <div class="endpoint open" id="ep-status">
+                <div class="endpoint-header" onclick="toggle('ep-status')">
+                    <span class="method-badge GET">GET</span>
+                    <span class="endpoint-path">/api/v1/status</span>
+                    <span class="perm-tag badge-read">read</span>
+                    <span class="endpoint-summary">Server health + counts</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <p>Health check. Returns agent count and active ports.</p>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example request</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     http://localhost:1024/api/v1/status</pre>
+                    </div>
+                    <div class="code-wrap">
+                        <div class="code-label">Response</div>
+                        <pre>{
+  <span class="sh-key">"ok"</span>:        <span class="sh-num">true</span>,
+  <span class="sh-key">"agents"</span>:    <span class="sh-num">3</span>,
+  <span class="sh-key">"http_port"</span>: <span class="sh-num">1024</span>,
+  <span class="sh-key">"tcp_port"</span>:  <span class="sh-num">1080</span>,
+  <span class="sh-key">"udp_port"</span>:  <span class="sh-num">1081</span>,
+  <span class="sh-key">"dns_port"</span>:  <span class="sh-num">5300</span>
+}</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">200 OK</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Agents ─────────────────────────────────────────────────── -->
+        <div class="section" id="agents">
+            <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>Agents</h2>
+
+            <div class="endpoint" id="ep-agents-list">
+                <div class="endpoint-header" onclick="toggle('ep-agents-list')">
+                    <span class="method-badge GET">GET</span>
+                    <span class="endpoint-path">/api/v1/agents</span>
+                    <span class="perm-tag badge-read">read</span>
+                    <span class="endpoint-summary">List all agents</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <p>Lists every connected agent.</p>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example request</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     http://localhost:1024/api/v1/agents</pre>
+                    </div>
+                    <div class="code-wrap">
+                        <div class="code-label">Response</div>
+                        <pre>[
+  {
+    <span class="sh-key">"id"</span>:           <span class="sh-str">"agent-1"</span>,
+    <span class="sh-key">"subnets"</span>:      [<span class="sh-str">"192.168.1.0/24"</span>],
+    <span class="sh-key">"os"</span>:           <span class="sh-str">"linux"</span>,
+    <span class="sh-key">"hostname"</span>:     <span class="sh-str">"srv-01"</span>,
+    <span class="sh-key">"username"</span>:     <span class="sh-str">"root"</span>,
+    <span class="sh-key">"tag"</span>:          <span class="sh-str">"dmz"</span>,
+    <span class="sh-key">"last_seen"</span>:    <span class="sh-str">"2026-04-02T09:51:48Z"</span>,
+    <span class="sh-key">"connected_at"</span>: <span class="sh-str">"2026-04-02T09:00:00Z"</span>
+  }
+]</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">200 OK</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-agent-get">
+                <div class="endpoint-header" onclick="toggle('ep-agent-get')">
+                    <span class="method-badge GET">GET</span>
+                    <span class="endpoint-path">/api/v1/agents/<span class="param">{id}</span></span>
+                    <span class="perm-tag badge-read">read</span>
+                    <span class="endpoint-summary">Get single agent</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <p>Get one agent by ID.</p>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     http://localhost:1024/api/v1/agents/agent-1</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">200 OK</span>
+                        <span class="resp-chip resp-4xx">404 agent_not_found</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Routes ─────────────────────────────────────────────────── -->
+        <div class="section" id="routes">
+            <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/></svg>Routes</h2>
+
+            <div class="endpoint" id="ep-routes-get">
+                <div class="endpoint-header" onclick="toggle('ep-routes-get')">
+                    <span class="method-badge GET">GET</span>
+                    <span class="endpoint-path">/api/v1/routes</span>
+                    <span class="perm-tag badge-read">read</span>
+                    <span class="endpoint-summary">List routes</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <p>Returns all routes with their agent and enabled/disabled state.</p>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     http://localhost:1024/api/v1/routes</pre>
+                    </div>
+                    <div class="code-wrap">
+                        <div class="code-label">Response</div>
+                        <pre>[
+  {<span class="sh-key">"subnet"</span>: <span class="sh-str">"192.168.1.0/24"</span>, <span class="sh-key">"agent_id"</span>: <span class="sh-str">"agent-1"</span>, <span class="sh-key">"disabled"</span>: <span class="sh-num">false</span>},
+  {<span class="sh-key">"subnet"</span>: <span class="sh-str">"10.10.10.0/24"</span>,  <span class="sh-key">"agent_id"</span>: <span class="sh-str">"agent-2"</span>, <span class="sh-key">"disabled"</span>: <span class="sh-num">true</span>}
+]</pre>
+                    </div>
+                    <div class="resp-list"><span class="resp-chip resp-2xx">200 OK</span></div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-routes-patch">
+                <div class="endpoint-header" onclick="toggle('ep-routes-patch')">
+                    <span class="method-badge PATCH">PATCH</span>
+                    <span class="endpoint-path">/api/v1/routes</span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">Enable / disable a route</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <p>Enable or disable proxying for a subnet. Disabled routes are skipped by the transparent proxy.</p>
+                    <h3>Request body</h3>
+                    <table class="param-table">
+                        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><span class="param-name">subnet</span></td><td><span class="param-type">string</span></td><td><span class="param-req">yes</span></td><td>CIDR subnet, must exist in routing table</td></tr>
+                            <tr><td><span class="param-name">disabled</span></td><td><span class="param-type">bool</span></td><td><span class="param-req">yes</span></td><td><code>true</code> to disable, <code>false</code> to enable</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Disable</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X PATCH -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     -H <span class="sh-str">"Content-Type: application/json"</span> \
+     -d <span class="sh-str">'{"subnet":"192.168.1.0/24","disabled":true}'</span> \
+     http://localhost:1024/api/v1/routes</pre>
+                    </div>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Enable</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X PATCH -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     -H <span class="sh-str">"Content-Type: application/json"</span> \
+     -d <span class="sh-str">'{"subnet":"192.168.1.0/24","disabled":false}'</span> \
+     http://localhost:1024/api/v1/routes</pre>
+                    </div>
+                    <div class="code-wrap">
+                        <div class="code-label">Response</div>
+                        <pre>{<span class="sh-key">"subnet"</span>: <span class="sh-str">"192.168.1.0/24"</span>, <span class="sh-key">"disabled"</span>: <span class="sh-num">true</span>}</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">200 OK</span>
+                        <span class="resp-chip resp-4xx">404 subnet_not_found</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Port Forwards ──────────────────────────────────────────── -->
+        <div class="section" id="forwards">
+            <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>Port Forwards</h2>
+            <p>Agent opens a port locally and forwards connections to the target.</p>
+
+            <div class="endpoint" id="ep-fwd-list">
+                <div class="endpoint-header" onclick="toggle('ep-fwd-list')">
+                    <span class="method-badge GET">GET</span>
+                    <span class="endpoint-path">/api/v1/forwards</span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">List all forwards</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     http://localhost:1024/api/v1/forwards</pre>
+                    </div>
+                    <div class="resp-list"><span class="resp-chip resp-2xx">200 OK</span></div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-fwd-create">
+                <div class="endpoint-header" onclick="toggle('ep-fwd-create')">
+                    <span class="method-badge POST">POST</span>
+                    <span class="endpoint-path">/api/v1/forwards</span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">Create forward</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <h3>Request body</h3>
+                    <table class="param-table">
+                        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><span class="param-name">agent_id</span></td><td><span class="param-type">string</span></td><td><span class="param-req">yes</span></td><td>Target agent ID</td></tr>
+                            <tr><td><span class="param-name">listen_port</span></td><td><span class="param-type">int</span></td><td><span class="param-req">yes</span></td><td>Port to listen on the agent</td></tr>
+                            <tr><td><span class="param-name">target_host</span></td><td><span class="param-type">string</span></td><td><span class="param-req">yes</span></td><td>Destination host</td></tr>
+                            <tr><td><span class="param-name">target_port</span></td><td><span class="param-type">int</span></td><td><span class="param-req">yes</span></td><td>Destination port</td></tr>
+                            <tr><td><span class="param-name">protocol</span></td><td><span class="param-type">string</span></td><td><span class="param-opt">no</span></td><td><code>tcp</code> (default) or <code>udp</code></td></tr>
+                        </tbody>
+                    </table>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X POST -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     -H <span class="sh-str">"Content-Type: application/json"</span> \
+     -d <span class="sh-str">'{"agent_id":"agent-1","listen_port":8080,"target_host":"192.168.1.10","target_port":80,"protocol":"tcp"}'</span> \
+     http://localhost:1024/api/v1/forwards</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">201 Created</span>
+                        <span class="resp-chip resp-4xx">404 agent_not_found</span>
+                        <span class="resp-chip resp-4xx">409 port_already_in_use</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-fwd-del">
+                <div class="endpoint-header" onclick="toggle('ep-fwd-del')">
+                    <span class="method-badge DELETE">DELETE</span>
+                    <span class="endpoint-path">/api/v1/forwards<span class="query">?id={listener_id}</span></span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">Delete forward</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X DELETE -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     "http://localhost:1024/api/v1/forwards?id=&lt;listener-id&gt;"</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">200 OK</span>
+                        <span class="resp-chip resp-4xx">404 not_found</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Reverse Forwards ───────────────────────────────────────── -->
+        <div class="section" id="rforwards">
+            <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>Reverse Forwards</h2>
+            <p>Server opens a port and pipes connections through an agent.</p>
+
+            <div class="endpoint" id="ep-rfwd-list">
+                <div class="endpoint-header" onclick="toggle('ep-rfwd-list')">
+                    <span class="method-badge GET">GET</span>
+                    <span class="endpoint-path">/api/v1/rforwards</span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">List reverse forwards</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     http://localhost:1024/api/v1/rforwards</pre>
+                    </div>
+                    <div class="resp-list"><span class="resp-chip resp-2xx">200 OK</span></div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-rfwd-create">
+                <div class="endpoint-header" onclick="toggle('ep-rfwd-create')">
+                    <span class="method-badge POST">POST</span>
+                    <span class="endpoint-path">/api/v1/rforwards</span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">Create reverse forward</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <h3>Request body</h3>
+                    <table class="param-table">
+                        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><span class="param-name">agent_id</span></td><td><span class="param-type">string</span></td><td><span class="param-req">yes</span></td><td>Agent to tunnel through</td></tr>
+                            <tr><td><span class="param-name">listen_port</span></td><td><span class="param-type">int</span></td><td><span class="param-req">yes</span></td><td>Port to open on the server</td></tr>
+                            <tr><td><span class="param-name">target_host</span></td><td><span class="param-type">string</span></td><td><span class="param-req">yes</span></td><td>Internal target host</td></tr>
+                            <tr><td><span class="param-name">target_port</span></td><td><span class="param-type">int</span></td><td><span class="param-req">yes</span></td><td>Internal target port</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example expose RDP</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X POST -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     -H <span class="sh-str">"Content-Type: application/json"</span> \
+     -d <span class="sh-str">'{"agent_id":"agent-1","listen_port":13389,"target_host":"127.0.0.1","target_port":3389}'</span> \
+     http://localhost:1024/api/v1/rforwards</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">201 Created</span>
+                        <span class="resp-chip resp-5xx">500 start failed</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-rfwd-del">
+                <div class="endpoint-header" onclick="toggle('ep-rfwd-del')">
+                    <span class="method-badge DELETE">DELETE</span>
+                    <span class="endpoint-path">/api/v1/rforwards<span class="query">?id={listener_id}</span></span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">Delete reverse forward</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X DELETE -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     "http://localhost:1024/api/v1/rforwards?id=&lt;listener-id&gt;"</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">200 OK</span>
+                        <span class="resp-chip resp-4xx">404 not_found</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── SOCKS ──────────────────────────────────────────────────── -->
+        <div class="section" id="socks">
+            <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>SOCKS5 Proxies</h2>
+            <p>SOCKS5 proxy tunnelled through an agent.</p>
+
+            <div class="endpoint" id="ep-socks-list">
+                <div class="endpoint-header" onclick="toggle('ep-socks-list')">
+                    <span class="method-badge GET">GET</span>
+                    <span class="endpoint-path">/api/v1/socks</span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">List SOCKS proxies</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     http://localhost:1024/api/v1/socks</pre>
+                    </div>
+                    <div class="resp-list"><span class="resp-chip resp-2xx">200 OK</span></div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-socks-create">
+                <div class="endpoint-header" onclick="toggle('ep-socks-create')">
+                    <span class="method-badge POST">POST</span>
+                    <span class="endpoint-path">/api/v1/socks</span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">Start SOCKS proxy</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <table class="param-table">
+                        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><span class="param-name">agent_id</span></td><td><span class="param-type">string</span></td><td><span class="param-req">yes</span></td><td>Agent to proxy through</td></tr>
+                            <tr><td><span class="param-name">port</span></td><td><span class="param-type">int</span></td><td><span class="param-req">yes</span></td><td>Local SOCKS5 listen port</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X POST -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     -H <span class="sh-str">"Content-Type: application/json"</span> \
+     -d <span class="sh-str">'{"agent_id":"agent-1","port":1080}'</span> \
+     http://localhost:1024/api/v1/socks</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">201 Created</span>
+                        <span class="resp-chip resp-4xx">404 agent_not_found</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-socks-del">
+                <div class="endpoint-header" onclick="toggle('ep-socks-del')">
+                    <span class="method-badge DELETE">DELETE</span>
+                    <span class="endpoint-path">/api/v1/socks<span class="query">?id={listener_id}</span></span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">Stop SOCKS proxy</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X DELETE -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     "http://localhost:1024/api/v1/socks?id=&lt;listener-id&gt;"</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">200 OK</span>
+                        <span class="resp-chip resp-4xx">404 not_found</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Bind Connect ───────────────────────────────────────────── -->
+        <div class="section" id="connect-bind">
+            <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/></svg>Bind Connect</h2>
+            <p>Agent runs in bind mode (listens). Server dials out to it. Retries automatically until cancelled.</p>
+
+            <div class="callout admin">
+                <span class="callout-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+                <div><strong>admin</strong> only. DELETE also kills the active agent session.</div>
+            </div>
+
+            <div class="endpoint" id="ep-bind-list">
+                <div class="endpoint-header" onclick="toggle('ep-bind-list')">
+                    <span class="method-badge GET">GET</span>
+                    <span class="endpoint-path">/api/v1/connect-bind</span>
+                    <span class="perm-tag badge-admin">admin</span>
+                    <span class="endpoint-summary">List active bind connects</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -H <span class="sh-str">"Authorization: Bearer $ADMIN_TOKEN"</span> \
+     http://localhost:1024/api/v1/connect-bind</pre>
+                    </div>
+                    <div class="code-wrap">
+                        <div class="code-label">Response</div>
+                        <pre>[{<span class="sh-key">"addr"</span>: <span class="sh-str">"172.16.1.5:9001"</span>, <span class="sh-key">"active"</span>: <span class="sh-num">true</span>}]</pre>
+                    </div>
+                    <div class="resp-list"><span class="resp-chip resp-2xx">200 OK</span></div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-bind-create">
+                <div class="endpoint-header" onclick="toggle('ep-bind-create')">
+                    <span class="method-badge POST">POST</span>
+                    <span class="endpoint-path">/api/v1/connect-bind</span>
+                    <span class="perm-tag badge-admin">admin</span>
+                    <span class="endpoint-summary">Start bind connect loop</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <table class="param-table">
+                        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><span class="param-name">host</span></td><td><span class="param-type">string</span></td><td><span class="param-req">yes</span></td><td>Bind agent IP or hostname</td></tr>
+                            <tr><td><span class="param-name">port</span></td><td><span class="param-type">int</span></td><td><span class="param-req">yes</span></td><td>Bind agent listen port</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X POST -H <span class="sh-str">"Authorization: Bearer $ADMIN_TOKEN"</span> \
+     -H <span class="sh-str">"Content-Type: application/json"</span> \
+     -d <span class="sh-str">'{"host":"172.16.1.5","port":9001}'</span> \
+     http://localhost:1024/api/v1/connect-bind</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">201 Created</span>
+                        <span class="resp-chip resp-4xx">409 already_connecting</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-bind-del">
+                <div class="endpoint-header" onclick="toggle('ep-bind-del')">
+                    <span class="method-badge DELETE">DELETE</span>
+                    <span class="endpoint-path">/api/v1/connect-bind<span class="query">?addr={host:port}</span></span>
+                    <span class="perm-tag badge-admin">admin</span>
+                    <span class="endpoint-summary">Stop + disconnect</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <p>Kills the retry loop and drops the active connection if there is one.</p>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X DELETE -H <span class="sh-str">"Authorization: Bearer $ADMIN_TOKEN"</span> \
+     "http://localhost:1024/api/v1/connect-bind?addr=172.16.1.5:9001"</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">200 OK</span>
+                        <span class="resp-chip resp-4xx">404 not_found</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── CLI ────────────────────────────────────────────────────── -->
+        <div class="section" id="cli">
+            <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>CLI</h2>
+
+            <div class="callout admin">
+                <span class="callout-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+                <div><strong>admin</strong> only. Runs a CLI command server-side.</div>
+            </div>
+
+            <div class="endpoint" id="ep-cli">
+                <div class="endpoint-header" onclick="toggle('ep-cli')">
+                    <span class="method-badge POST">POST</span>
+                    <span class="endpoint-path">/api/v1/cli</span>
+                    <span class="perm-tag badge-admin">admin</span>
+                    <span class="endpoint-summary">Execute CLI command</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <table class="param-table">
+                        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><span class="param-name">cmd</span></td><td><span class="param-type">string</span></td><td><span class="param-req">yes</span></td><td>CLI command string (e.g. <code>agents</code>, <code>help</code>)</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X POST -H <span class="sh-str">"Authorization: Bearer $ADMIN_TOKEN"</span> \
+     -H <span class="sh-str">"Content-Type: application/json"</span> \
+     -d <span class="sh-str">'{"cmd":"agents"}'</span> \
+     http://localhost:1024/api/v1/cli</pre>
+                    </div>
+                    <div class="code-wrap">
+                        <div class="code-label">Response</div>
+                        <pre>{<span class="sh-key">"output"</span>: <span class="sh-str">"[*] Connected agents:\n  agent-1  linux  ..."</span>}</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">200 OK</span>
+                        <span class="resp-chip resp-4xx">400 cmd_required</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Settings ───────────────────────────────────────────────── -->
+        <div class="section" id="settings">
+            <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</h2>
+
+            <div class="endpoint" id="ep-settings-get">
+                <div class="endpoint-header" onclick="toggle('ep-settings-get')">
+                    <span class="method-badge GET">GET</span>
+                    <span class="endpoint-path">/api/v1/settings</span>
+                    <span class="perm-tag badge-admin">admin</span>
+                    <span class="endpoint-summary">Get current settings</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -H <span class="sh-str">"Authorization: Bearer $ADMIN_TOKEN"</span> \
+     http://localhost:1024/api/v1/settings</pre>
+                    </div>
+                    <div class="code-wrap">
+                        <div class="code-label">Response</div>
+                        <pre>{
+  <span class="sh-key">"http_port"</span>: <span class="sh-num">1024</span>,
+  <span class="sh-key">"tcp_port"</span>:  <span class="sh-num">1080</span>,
+  <span class="sh-key">"udp_port"</span>:  <span class="sh-num">1081</span>,
+  <span class="sh-key">"dns_port"</span>:  <span class="sh-num">5300</span>
+}</pre>
+                    </div>
+                    <div class="resp-list"><span class="resp-chip resp-2xx">200 OK</span></div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-settings-patch">
+                <div class="endpoint-header" onclick="toggle('ep-settings-patch')">
+                    <span class="method-badge PATCH">PATCH</span>
+                    <span class="endpoint-path">/api/v1/settings</span>
+                    <span class="perm-tag badge-admin">admin</span>
+                    <span class="endpoint-summary">Update settings</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <table class="param-table">
+                        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><span class="param-name">http_port</span></td><td><span class="param-type">int</span></td><td><span class="param-opt">no</span></td><td>New HTTP dashboard port</td></tr>
+                            <tr><td><span class="param-name">tcp_port</span></td><td><span class="param-type">int</span></td><td><span class="param-opt">no</span></td><td>New TCP proxy port</td></tr>
+                            <tr><td><span class="param-name">udp_port</span></td><td><span class="param-type">int</span></td><td><span class="param-opt">no</span></td><td>New UDP proxy port</td></tr>
+                            <tr><td><span class="param-name">dns_port</span></td><td><span class="param-type">int</span></td><td><span class="param-opt">no</span></td><td>New DNS proxy port</td></tr>
+                            <tr><td><span class="param-name">action</span></td><td><span class="param-type">string</span></td><td><span class="param-opt">no</span></td><td><code>regenerate</code> regenerates encryption key and disconnects all agents</td></tr>
+                            <tr><td><span class="param-name">new_key</span></td><td><span class="param-type">string</span></td><td><span class="param-opt">no</span></td><td>Base64url-encoded 32-byte key</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example change HTTP port</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X PATCH -H <span class="sh-str">"Authorization: Bearer $ADMIN_TOKEN"</span> \
+     -H <span class="sh-str">"Content-Type: application/json"</span> \
+     -d <span class="sh-str">'{"http_port":9090}'</span> \
+     http://localhost:1024/api/v1/settings</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">200 OK</span>
+                        <span class="resp-chip resp-4xx">400 invalid_key</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Tokens ─────────────────────────────────────────────────── -->
+        <div class="section" id="tokens">
+            <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Token Management</h2>
+
+            <div class="endpoint" id="ep-tok-list">
+                <div class="endpoint-header" onclick="toggle('ep-tok-list')">
+                    <span class="method-badge GET">GET</span>
+                    <span class="endpoint-path">/api/v1/tokens</span>
+                    <span class="perm-tag badge-admin">admin</span>
+                    <span class="endpoint-summary">List tokens</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <p>Lists tokens. The raw token string is only shown on creation.</p>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -H <span class="sh-str">"Authorization: Bearer $ADMIN_TOKEN"</span> \
+     http://localhost:1024/api/v1/tokens</pre>
+                    </div>
+                    <div class="resp-list"><span class="resp-chip resp-2xx">200 OK</span></div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-tok-create">
+                <div class="endpoint-header" onclick="toggle('ep-tok-create')">
+                    <span class="method-badge POST">POST</span>
+                    <span class="endpoint-path">/api/v1/tokens</span>
+                    <span class="perm-tag badge-admin">admin</span>
+                    <span class="endpoint-summary">Create token</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <table class="param-table">
+                        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><span class="param-name">name</span></td><td><span class="param-type">string</span></td><td><span class="param-req">yes</span></td><td>Token label, max 64 chars</td></tr>
+                            <tr><td><span class="param-name">permissions</span></td><td><span class="param-type">[]string</span></td><td><span class="param-opt">no</span></td><td><code>read</code>, <code>write</code>, or <code>admin</code>. Defaults to <code>read</code>.</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X POST -H <span class="sh-str">"Authorization: Bearer $ADMIN_TOKEN"</span> \
+     -H <span class="sh-str">"Content-Type: application/json"</span> \
+     -d <span class="sh-str">'{"name":"ci-read","permissions":["read"]}'</span> \
+     http://localhost:1024/api/v1/tokens</pre>
+                    </div>
+                    <div class="code-wrap">
+                        <div class="code-label">Response <span style="color:var(--danger-color);font-weight:700;"> save the token now, it won't be shown again</span></div>
+                        <pre>{
+  <span class="sh-key">"id"</span>:          <span class="sh-str">"a1b2c3d4"</span>,
+  <span class="sh-key">"token"</span>:       <span class="sh-str">"tun_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX="</span>,
+  <span class="sh-key">"name"</span>:        <span class="sh-str">"ci-read"</span>,
+  <span class="sh-key">"permissions"</span>: [<span class="sh-str">"read"</span>],
+  <span class="sh-key">"created_at"</span>:  <span class="sh-str">"2026-04-02T10:00:00Z"</span>
+}</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">201 Created</span>
+                        <span class="resp-chip resp-4xx">400 name_required</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-tok-revoke">
+                <div class="endpoint-header" onclick="toggle('ep-tok-revoke')">
+                    <span class="method-badge DELETE">DELETE</span>
+                    <span class="endpoint-path">/api/v1/tokens/revoke<span class="query">?id={token_id}</span></span>
+                    <span class="perm-tag badge-admin">admin</span>
+                    <span class="endpoint-summary">Revoke token</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X DELETE -H <span class="sh-str">"Authorization: Bearer $ADMIN_TOKEN"</span> \
+     "http://localhost:1024/api/v1/tokens/revoke?id=a1b2c3d4"</pre>
+                    </div>
+                    <div class="resp-list">
+                        <span class="resp-chip resp-2xx">200 OK</span>
+                        <span class="resp-chip resp-4xx">404 not_found</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Agent Actions ──────────────────────────────────────────── -->
+        <div class="section" id="agent-actions">
+            <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px;margin-right:8px"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Agent Actions</h2>
+            <p>All actions below are <code>POST /api/v1/agents/{id}/{action}</code>.</p>
+
+            <div class="endpoint" id="ep-ag-disconnect">
+                <div class="endpoint-header" onclick="toggle('ep-ag-disconnect')">
+                    <span class="method-badge POST">POST</span>
+                    <span class="endpoint-path">/api/v1/agents/<span class="param">{id}</span>/disconnect</span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">Disconnect agent</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X POST -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     http://localhost:1024/api/v1/agents/agent-1/disconnect</pre>
+                    </div>
+                    <div class="resp-list"><span class="resp-chip resp-2xx">200 OK</span></div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-ag-reconnect">
+                <div class="endpoint-header" onclick="toggle('ep-ag-reconnect')">
+                    <span class="method-badge POST">POST</span>
+                    <span class="endpoint-path">/api/v1/agents/<span class="param">{id}</span>/reconnect</span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">Request reconnect</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X POST -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     http://localhost:1024/api/v1/agents/agent-1/reconnect</pre>
+                    </div>
+                    <div class="resp-list"><span class="resp-chip resp-2xx">200 OK</span></div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-ag-tag">
+                <div class="endpoint-header" onclick="toggle('ep-ag-tag')">
+                    <span class="method-badge POST">POST</span>
+                    <span class="endpoint-path">/api/v1/agents/<span class="param">{id}</span>/tag</span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">Set agent tag</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <table class="param-table">
+                        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><span class="param-name">tag</span></td><td><span class="param-type">string</span></td><td><span class="param-req">yes</span></td><td>Max 64 chars. Send empty string to clear.</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X POST -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     -H <span class="sh-str">"Content-Type: application/json"</span> \
+     -d <span class="sh-str">'{"tag":"dmz-pivot"}'</span> \
+     http://localhost:1024/api/v1/agents/agent-1/tag</pre>
+                    </div>
+                    <div class="resp-list"><span class="resp-chip resp-2xx">200 OK</span></div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-ag-ping">
+                <div class="endpoint-header" onclick="toggle('ep-ag-ping')">
+                    <span class="method-badge POST">POST</span>
+                    <span class="endpoint-path">/api/v1/agents/<span class="param">{id}</span>/ping</span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">ICMP ping from agent</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <table class="param-table">
+                        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><span class="param-name">target</span></td><td><span class="param-type">string</span></td><td><span class="param-req">yes</span></td><td>IP or hostname to ping</td></tr>
+                            <tr><td><span class="param-name">count</span></td><td><span class="param-type">int</span></td><td><span class="param-opt">no</span></td><td>Ping count (1–20, default 4)</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X POST -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     -H <span class="sh-str">"Content-Type: application/json"</span> \
+     -d <span class="sh-str">'{"target":"192.168.1.1","count":4}'</span> \
+     http://localhost:1024/api/v1/agents/agent-1/ping</pre>
+                    </div>
+                    <div class="resp-list"><span class="resp-chip resp-2xx">200 OK</span></div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-ag-sweep">
+                <div class="endpoint-header" onclick="toggle('ep-ag-sweep')">
+                    <span class="method-badge POST">POST</span>
+                    <span class="endpoint-path">/api/v1/agents/<span class="param">{id}</span>/discover</span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">Discover live hosts on a subnet</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <table class="param-table">
+                        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><span class="param-name">subnet</span></td><td><span class="param-type">string</span></td><td><span class="param-req">yes</span></td><td>CIDR notation e.g. <code>192.168.1.0/24</code></td></tr>
+                            <tr><td><span class="param-name">timeout_ms</span></td><td><span class="param-type">int</span></td><td><span class="param-opt">no</span></td><td>Per-host timeout ms (default 300)</td></tr>
+                            <tr><td><span class="param-name">workers</span></td><td><span class="param-type">int</span></td><td><span class="param-opt">no</span></td><td>Concurrent workers (default 100)</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X POST -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     -H <span class="sh-str">"Content-Type: application/json"</span> \
+     -d <span class="sh-str">'{"subnet":"192.168.1.0/24","timeout_ms":300,"workers":50}'</span> \
+     http://localhost:1024/api/v1/agents/agent-1/discover</pre>
+                    </div>
+                    <div class="resp-list"><span class="resp-chip resp-2xx">200 OK</span></div>
+                </div>
+            </div>
+
+            <div class="endpoint" id="ep-ag-portscan">
+                <div class="endpoint-header" onclick="toggle('ep-ag-portscan')">
+                    <span class="method-badge POST">POST</span>
+                    <span class="endpoint-path">/api/v1/agents/<span class="param">{id}</span>/portscan</span>
+                    <span class="perm-tag badge-write">write</span>
+                    <span class="endpoint-summary">Port scan from agent</span>
+                    <span class="chevron">›</span>
+                </div>
+                <div class="endpoint-body">
+                    <table class="param-table">
+                        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><span class="param-name">target</span></td><td><span class="param-type">string</span></td><td><span class="param-req">yes</span></td><td>Target IP or hostname</td></tr>
+                            <tr><td><span class="param-name">ports</span></td><td><span class="param-type">string</span></td><td><span class="param-opt">no</span></td><td>Port range e.g. <code>1-1024</code> or <code>22,80,443</code> (default <code>1-1024</code>)</td></tr>
+                            <tr><td><span class="param-name">proto</span></td><td><span class="param-type">string</span></td><td><span class="param-opt">no</span></td><td><code>tcp</code> (default) or <code>udp</code></td></tr>
+                        </tbody>
+                    </table>
+                    <div class="code-wrap">
+                        <div class="code-label"><span>Example</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+                        <pre><span class="sh-meth">curl</span> -X POST -H <span class="sh-str">"Authorization: Bearer $TOKEN"</span> \
+     -H <span class="sh-str">"Content-Type: application/json"</span> \
+     -d <span class="sh-str">'{"target":"10.10.10.5","ports":"1-1024","proto":"tcp"}'</span> \
+     http://localhost:1024/api/v1/agents/agent-1/portscan</pre>
+                    </div>
+                    <div class="resp-list"><span class="resp-chip resp-2xx">200 OK</span></div>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /docs-content -->
+</div><!-- /docs-main -->
+</div><!-- /docs-layout -->
+
+<script>
+// ── Theme ─────────────────────────────────────────────────────────────────
+function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    localStorage.setItem('theme', t);
+    const btn = document.getElementById('theme-toggle-btn');
+    const label = document.getElementById('theme-label');
+    if (t === 'dark') {
+        btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>' + ' <span id="theme-label"></span>';
+    } else {
+        btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>' + ' <span id="theme-label"></span>';
+    }
+}
+
+function toggleTheme() {
+    const current = document.documentElement.getAttribute('data-theme') || 'dark';
+    applyTheme(current === 'dark' ? 'light' : 'dark');
+}
+
+(function() {
+    const saved = localStorage.getItem('theme') || 'dark';
+    applyTheme(saved);
+})();
+
+// ── Endpoint toggle ───────────────────────────────────────────────────────
+function toggle(id) {
+    document.getElementById(id).classList.toggle('open');
+}
+
+// ── Sidebar scroll ─────────────────────────
+function scrollToSection(id) {
+    const el = document.getElementById(id);
+    if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+}
+
+const sections = document.querySelectorAll('.section');
+const navLinks  = document.querySelectorAll('.nav-link');
+
+const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+        if (e.isIntersecting) {
+            const id = e.target.id;
+            navLinks.forEach(l => {
+                const isMatch = l.getAttribute('onclick') && l.getAttribute('onclick').includes("'" + id + "'");
+                l.classList.toggle('active', isMatch);
+            });
+        }
+    });
+}, { rootMargin: '-20% 0px -70% 0px' });
+
+sections.forEach(s => observer.observe(s));
+
+// ── Copy buttons ──────────────────────────────────────────────────────────
+function copyCode(btn) {
+    const pre = btn.closest('.code-wrap').querySelector('pre');
+    navigator.clipboard.writeText(pre.innerText).then(() => {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1800);
+    });
+}
+</script>
+</body>
+</html>

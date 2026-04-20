@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <title>Rosemary</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+<!-- ═══════════════════════════ LOGIN SCREEN ═══════════════════════════ -->
+<div id="login-screen" class="screen">
+  <div class="login-logo">
+    <img src="img/logo-dark.png" alt="Rosemary Logo" id="login-logo-img" style="height:79px;width:180px;object-fit:contain;">
+  </div>
+
+  <div id="login-error" class="alert alert-error" style="display:none;"></div>
+
+  <form id="login-form" autocomplete="off">
+    <div class="field">
+      <label>Server IP</label>
+      <input type="text" id="login-ip" placeholder="192.168.1.1" spellcheck="false">
+    </div>
+    <div class="field">
+      <label>Port</label>
+      <input type="number" id="login-port" placeholder="8080" min="1" max="65535">
+    </div>
+    <div class="field">
+      <label>Key</label>
+      <div class="input-row">
+        <input type="password" id="login-key" placeholder="Enter server key" spellcheck="false">
+        <button type="button" class="icon-btn" id="toggle-key-vis" title="Show/hide key">
+          <svg id="eye-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <button type="submit" class="btn-primary full-width" id="login-btn">Login</button>
+  </form>
+</div>
+
+<!-- ═══════════════════════════ DASHBOARD SCREEN ═══════════════════════ -->
+<div id="dashboard-screen" class="screen" style="display:none;">
+
+  <!-- Header -->
+  <div class="dash-header">
+    <div class="server-info">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="server-label" class="server-label"></span>
+      <span class="agent-badge" id="agent-count-badge">0</span>
+    </div>
+    <div class="header-actions">
+      <button class="icon-btn" id="open-dashboard-btn" title="Open full dashboard">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+          <polyline points="15 3 21 3 21 9"/>
+          <line x1="10" y1="14" x2="21" y2="3"/>
+        </svg>
+      </button>
+      <button class="icon-btn" id="theme-btn" title="Toggle theme">
+        <svg id="theme-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
+      <button class="icon-btn danger" id="logout-btn" title="Logout">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+          <polyline points="16 17 21 12 16 7"/>
+          <line x1="21" y1="12" x2="9" y2="12"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Tab navigation -->
+  <div class="tabs">
+    <button class="tab active" data-tab="agents">Agents</button>
+    <button class="tab" data-tab="forwards">Forwards</button>
+    <button class="tab" data-tab="routes">Routes</button>
+    <button class="tab" data-tab="logs">Logs</button>
+    <button class="tab" data-tab="settings">Settings</button>
+    <button class="tab" data-tab="about">About</button>
+  </div>
+
+  <!-- ── AGENTS TAB ── -->
+  <div id="tab-agents" class="tab-panel active">
+
+    <!-- Quick actions bar -->
+    <div class="action-bar">
+      <button class="btn-sm" id="connect-bind-btn">▶ Connect to Bind Agent</button>
+      <button class="btn-sm" id="refresh-btn">↻ Refresh</button>
+    </div>
+
+    <!-- Connect to bind agent form -->
+    <div id="connect-bind-form" class="inline-form" style="display:none;">
+      <div class="inline-form-title">Connect to Bind Agent</div>
+      <div class="field-row">
+        <div class="field">
+          <label>Host</label>
+          <input type="text" id="cb-host" placeholder="192.168.1.10">
+        </div>
+        <div class="field field-sm">
+          <label>Port</label>
+          <input type="number" id="cb-port" placeholder="4444" min="1" max="65535">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn-primary btn-sm" id="cb-submit-btn">Connect</button>
+        <button class="btn-sm" id="cb-cancel-btn">Cancel</button>
+      </div>
+      <div id="cb-status" class="status-msg"></div>
+    </div>
+
+    <div id="agents-list" class="list-area">
+      <div class="empty-state">Loading agents…</div>
+    </div>
+  </div>
+
+  <!-- ── FORWARDS TAB ── -->
+  <div id="tab-forwards" class="tab-panel" style="display:none;">
+    <div class="action-bar">
+      <span class="section-title">Port Forwards</span>
+      <button class="btn-sm" id="forwards-refresh-btn">↻ Refresh</button>
+    </div>
+    <div id="forwards-list" class="list-area">
+      <div class="empty-state">Loading…</div>
+    </div>
+
+    <div class="action-bar" style="margin-top:8px;">
+      <span class="section-title">Reverse Forwards</span>
+    </div>
+    <div id="rforwards-list" class="list-area">
+      <div class="empty-state">Loading…</div>
+    </div>
+  </div>
+
+  <!-- ── ROUTES TAB ── -->
+  <div id="tab-routes" class="tab-panel" style="display:none;">
+    <div class="action-bar">
+      <span class="section-title">Routing Table</span>
+      <button class="btn-sm" id="routes-refresh-btn">↻ Refresh</button>
+    </div>
+    <div id="routes-list" class="list-area">
+      <div class="empty-state">Loading…</div>
+    </div>
+  </div>
+
+  <!-- ── LOGS TAB ── -->
+  <div id="tab-logs" class="tab-panel" style="display:none;">
+    <div class="log-tabs">
+      <button class="log-tab active" data-log="server">Server Log</button>
+      <button class="log-tab" data-log="cli">CLI Log</button>
+    </div>
+    <div class="action-bar">
+      <button class="btn-sm" id="logs-refresh-btn">↻ Refresh</button>
+      <button class="btn-sm" id="logs-clear-btn">Clear</button>
+    </div>
+    <pre id="log-output" class="log-box"></pre>
+  </div>
+
+  <!-- ── SETTINGS TAB ── -->
+  <div id="tab-settings" class="tab-panel" style="display:none;">
+    <div class="settings-area">
+      <div class="settings-group">
+        <div class="settings-group-title">Ports</div>
+        <div class="settings-row"><span>HTTP Dashboard</span><span id="s-http-port" class="mono">—</span></div>
+        <div class="settings-row"><span>TCP Proxy</span><span id="s-tcp-port" class="mono">—</span></div>
+        <div class="settings-row"><span>UDP Proxy</span><span id="s-udp-port" class="mono">—</span></div>
+        <div class="settings-row"><span>DNS Proxy</span><span id="s-dns-port" class="mono">—</span></div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">Security</div>
+        <div class="field">
+          <label>Current Key</label>
+          <div class="key-display">
+            <code id="s-current-key" class="key-code">—</code>
+            <button class="icon-btn" id="copy-key-btn" title="Copy key">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="form-actions" style="margin-top:8px;">
+          <button class="btn-sm" id="regen-key-btn">↻ Regenerate Key</button>
+        </div>
+        <div id="regen-confirm-wrap"></div>
+        <div id="settings-status" class="status-msg"></div>
+      </div>
+
+      <div class="settings-group danger-zone">
+        <div class="settings-group-title">Danger Zone</div>
+        <button class="btn-danger" id="shutdown-btn">⏻ Shutdown Server</button>
+        <div id="shutdown-confirm-wrap"></div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">Extension</div>
+        <button class="btn-sm" id="switch-server-btn">Switch Server</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── ABOUT TAB ── -->
+  <div id="tab-about" class="tab-panel" style="display:none;">
+    <div class="settings-area">
+      <div class="settings-group" style="text-align:center;padding:20px 16px;">
+        <img src="img/logo-dark.png" alt="Rosemary Logo" id="about-logo" style="height:79px;width:200px;object-fit:contain;margin-bottom:10px;">
+        <div style="font-size:1.2em;font-weight:700;letter-spacing:0.5px;margin-bottom:3px;">Rosemary</div>
+        <div style="font-size:0.74em;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:16px;">Version 1.0.0</div>
+        <hr style="border:none;border-top:1px solid var(--border);margin:0 0 16px;">
+        <div style="font-size:0.78em;color:var(--text-muted);margin-bottom:4px;">Developed by</div>
+        <div style="font-size:0.92em;font-weight:600;margin-bottom:14px;">
+          Chokri Hammedi &nbsp;<a href="https://github.com/blue0x1" target="_blank" style="font-size:0.84em;font-weight:400;color:var(--primary);text-decoration:none;">@blue0x1</a>
+        </div>
+        <div style="font-size:0.78em;color:var(--text-muted);margin-bottom:4px;">Source code</div>
+        <div style="font-size:0.82em;margin-bottom:16px;">
+          <a href="https://github.com/blue0x1/rosemary" target="_blank" style="color:var(--primary);text-decoration:none;font-weight:500;">github.com/blue0x1/rosemary</a>
+        </div>
+        <div style="font-size:0.78em;color:var(--text-muted);margin-bottom:4px;">Sponsor ❤️</div>
+        <div style="font-size:0.82em;margin-bottom:16px;">
+          <a href="https://github.com/sponsors/blue0x1" target="_blank" style="color:var(--primary);text-decoration:none;font-weight:500;">github.com/sponsors/blue0x1</a>
+        </div>
+        <hr style="border:none;border-top:1px solid var(--border);margin:0 0 12px;">
+        <div style="font-size:0.74em;color:var(--text-muted);">&copy; 2026 Chokri Hammedi. All rights reserved.</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- end dashboard-screen -->
+
+<script src="popup.js"></script>
+</body>
+</html>

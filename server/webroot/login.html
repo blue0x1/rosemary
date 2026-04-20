@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html data-theme="dark">
+<head>
+<title>Rosemary</title>
+
+<link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16x16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32x32.png">
+<link rel="shortcut icon" href="/static/icons/favicon.ico">
+
+ 
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+
+
+<link rel="stylesheet" type="text/css" href="/static/style.css">
+<script>
+(function() {
+    var t = localStorage.getItem('theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', t);
+})();
+</script>
+<style>
+body {
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	min-height: 100vh;
+	background-color: var(--background-color);
+	transition: background-color 0.3s ease;
+}
+.login-container {
+	background-color: var(--surface-color);
+	padding: 40px;
+	border-radius: 8px;
+	box-shadow: 0 4px 12px var(--shadow-color);
+	width: 100%;
+	max-width: 400px;
+	text-align: center;
+	transition: background-color 0.3s ease, box-shadow 0.3s ease;
+}
+.login-container h1 {
+	color: var(--primary-color);
+	margin-bottom: 30px;
+	font-size: 2em;
+	text-shadow: 1px 1px 6px var(--glow-color);
+}
+.login-container label {
+	display: block;
+	margin-bottom: 10px;
+	font-weight: 600;
+	color: var(--light-text-color);
+	text-align: left;
+}
+.login-container input[type="text"] {
+	width: calc(100% - 24px);
+	padding: 12px;
+	margin-bottom: 20px;
+	border: 1px solid var(--border-color);
+	border-radius: 5px;
+	font-size: 1em;
+	background-color: var(--background-color);
+	color: var(--text-color);
+	transition: border-color 0.2s ease, background-color 0.3s ease;
+}
+.login-container input[type="text"]:focus {
+	outline: none;
+	border-color: var(--primary-color);
+	box-shadow: 0 0 0 3px var(--input-focus-glow);
+}
+.error-message {
+	color: var(--danger-color);
+	margin-top: -10px;
+	margin-bottom: 20px;
+	font-weight: 500;
+}
+.theme-toggle-btn {
+	position: fixed;
+	top: 16px;
+	right: 16px;
+	background-color: var(--surface-color);
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	padding: 6px 14px;
+	font-size: 0.78em;
+	font-weight: 600;
+	color: var(--primary-color);
+	cursor: pointer;
+	transition: all 0.2s ease;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.theme-toggle-btn:hover {
+	background-color: var(--primary-color);
+	color: var(--button-text-color);
+	box-shadow: 0 2px 8px var(--glow-color);
+	border-color: var(--primary-color);
+}
+</style>
+</head>
+<body>
+
+<button class="theme-toggle-btn" id="theme-toggle-btn" onclick="toggleTheme()">
+	<svg id="theme-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+	<span id="theme-label">Dark</span>
+</button>
+
+<div class="login-container">
+<h1>Login to Rosemary</h1>
+{{if .Error}}
+<p class="error-message">{{.Error}}</p>
+{{end}}
+<form action="/login-post" method="post">
+<label for="key">Enter Login Key:</label>
+<input type="text" id="key" name="key" required autofocus>
+<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<input type="hidden" name="csrf_id" value="{{.TempID}}">
+<input type="submit" value="Login">
+</form>
+</div>
+
+<script>
+var SUN_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>';
+var MOON_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+
+function applyTheme(t) {
+	document.documentElement.setAttribute('data-theme', t);
+	localStorage.setItem('theme', t);
+	var btn = document.getElementById('theme-toggle-btn');
+	var label = document.getElementById('theme-label');
+	if (t === 'dark') {
+		btn.innerHTML = MOON_SVG + ' <span id="theme-label"></span>';
+	} else {
+		btn.innerHTML = SUN_SVG + ' <span id="theme-label"></span>';
+	}
+}
+
+function toggleTheme() {
+	var current = document.documentElement.getAttribute('data-theme') || 'dark';
+	applyTheme(current === 'dark' ? 'light' : 'dark');
+}
+
+applyTheme(localStorage.getItem('theme') || 'dark');
+</script>
+</body>
+</html>
