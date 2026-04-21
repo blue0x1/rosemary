@@ -4,8 +4,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DIST="$SCRIPT_DIR/dist"
 
-# Usage: ./build.sh [server|agent|all] [linux|windows|darwin|freebsd|openbsd|all] [amd64|arm64|arm|386|all]
-TARGET="${1:-all}"   # server | agent | all
+# Usage: ./build.sh [rosemary|agent|all] [linux|windows|darwin|freebsd|openbsd|all] [amd64|arm64|arm|386|all]
+TARGET="${1:-all}"   # rosemary | agent | all
 OS="${2:-all}"       # linux | windows | darwin | freebsd | openbsd | all
 ARCH="${3:-all}"     # amd64 | arm64 | arm | 386 | all
 
@@ -39,7 +39,7 @@ build() {
     local size
     size=$(stat -c %s "$out" 2>/dev/null || stat -f %z "$out")
     local min_size
-    [ "$name" = "server" ] && min_size=$MIN_SERVER_SIZE || min_size=$MIN_AGENT_SIZE
+    [ "$name" = "rosemary" ] && min_size=$MIN_SERVER_SIZE || min_size=$MIN_AGENT_SIZE
 
     if [ "$size" -lt "$min_size" ]; then
         echo "    WARNING: $out is suspiciously small ($((size / 1024 / 1024))M) — may be incomplete"
@@ -59,7 +59,7 @@ OS_ARCHS[darwin]="amd64 arm64"
 OS_ARCHS[freebsd]="amd64 arm64 arm 386"
 OS_ARCHS[openbsd]="amd64 arm64 arm 386"
 
-for name in server agent; do
+for name in rosemary agent; do
     should_build_target "$name" || continue
     echo "[*] Building $name..."
     for goos in linux windows darwin freebsd openbsd; do

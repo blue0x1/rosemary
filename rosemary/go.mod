@@ -1,4 +1,4 @@
-module github.com/blue0x1/rosemary/server
+module github.com/blue0x1/rosemary/rosemary
 
 go 1.25.0
 
