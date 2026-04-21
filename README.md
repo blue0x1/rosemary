@@ -212,13 +212,13 @@ Dashboard available at `http://server-ip:1024`: log in with your key.
 
 ```bash
 # Standard (agent connects to server)
-./agent-linux-amd64 -s ws://server-ip:1024/ws -k YOUR_KEY
+./agent-linux-amd64 -s server-ip:1024 -k YOUR_KEY
 
 # Background mode
-./agent-linux-amd64 -b -s ws://server-ip:1024/ws -k YOUR_KEY
+./agent-linux-amd64 -b -s server-ip:1024 -k YOUR_KEY
 
 # Windows
-agent-windows-amd64.exe -s ws://server-ip:1024/ws -k YOUR_KEY
+agent-windows-amd64.exe -s server-ip:1024 -k YOUR_KEY
 ```
 
 Once connected, the agent's subnets are automatically routed through it.
