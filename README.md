@@ -183,14 +183,27 @@ The extension icon will appear in your browser toolbar.
 
 ## Quick Start
 
+### Install
+
+```bash
+# Install via go install
+go install github.com/blue0x1/rosemary/rosemary@latest
+go install github.com/blue0x1/rosemary/agent@latest
+
+# Copy to system path for sudo use
+sudo cp ~/go/bin/rosemary /usr/local/bin/
+```
+
+Or download pre-built binaries from [Releases](https://github.com/blue0x1/rosemary/releases).
+
 ### 1. Start the Server
 
 ```bash
 # Auto-generate a key
-sudo ./server-linux-amd64
+sudo rosemary
 
 # Or provide your own
-sudo ./server-linux-amd64 -key YOUR_BASE64_KEY
+sudo rosemary -k YOUR_BASE64_KEY
 ```
 
 Dashboard available at `http://server-ip:1024`: log in with your key.
@@ -199,13 +212,13 @@ Dashboard available at `http://server-ip:1024`: log in with your key.
 
 ```bash
 # Standard (agent connects to server)
-./agent-linux-amd64 -s server-ip:1024 -k YOUR_KEY
+./agent-linux-amd64 -s ws://server-ip:1024/ws -k YOUR_KEY
 
 # Background mode
-./agent-linux-amd64 -b -s server-ip:1024 -k YOUR_KEY
+./agent-linux-amd64 -b -s ws://server-ip:1024/ws -k YOUR_KEY
 
 # Windows
-agent-windows-amd64.exe -s server-ip:1024 -k YOUR_KEY
+agent-windows-amd64.exe -s ws://server-ip:1024/ws -k YOUR_KEY
 ```
 
 Once connected, the agent's subnets are automatically routed through it.
@@ -351,7 +364,7 @@ cd rosemary
 bash build.sh
 
 # Build specific target
-bash build.sh server linux amd64
+bash build.sh rosemary linux amd64
 bash build.sh agent  windows arm64
 
 # Output goes to dist/
@@ -367,7 +380,7 @@ bash build.sh agent  windows arm64
 The Windows server uses WinDivert for kernel-level packet interception. Before building:
 
 1. Download **WinDivert.dll** and **WinDivert64.sys** from [reqrypt.org/windivert.html](https://reqrypt.org/windivert.html) (v2.x, 64-bit)
-2. Place both files in the `server/` directory
+2. Place both files in the `rosemary/` directory
 
 They are embedded into the binary at build time.
 
