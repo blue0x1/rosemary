@@ -188,7 +188,7 @@ The extension icon will appear in your browser toolbar.
 ```bash
 # Install via go install
 go install github.com/blue0x1/rosemary/rosemary@latest
-go install github.com/blue0x1/rosemary/agent@latest
+go install github.com/blue0x1/rosemary/agent@latest # For install agent
 
 # Copy to system path for sudo use
 sudo cp ~/go/bin/rosemary /usr/local/bin/
