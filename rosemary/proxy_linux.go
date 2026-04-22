@@ -772,36 +772,12 @@ func startUDPProxyV6() {
 	}
 }
 
-const dnsFallbackMark = 0x2345
-
-func addDNSFallbackExclusion() {
-	iptCmd("iptables", "-t", "nat", "-I", "OUTPUT", "1",
-		"-p", "udp", "--dport", "53",
-		"-m", "mark", "--mark", fmt.Sprintf("0x%x", dnsFallbackMark),
-		"-j", "RETURN").CombinedOutput()
-}
-
-func removeDNSFallbackExclusion() {
-	iptCmd("iptables", "-t", "nat", "-D", "OUTPUT",
-		"-p", "udp", "--dport", "53",
-		"-m", "mark", "--mark", fmt.Sprintf("0x%x", dnsFallbackMark),
-		"-j", "RETURN").CombinedOutput()
-}
-
 var fallbackPublicDNS = []string{"8.8.8.8", "1.1.1.1", "8.8.4.4"}
 
 func queryFallbackDNS(domain string, qtype uint16) *DNSResponseMessage {
-	markedDialer := &net.Dialer{
-		Timeout: 2 * time.Second,
-		Control: func(network, address string, conn syscall.RawConn) error {
-			return conn.Control(func(fd uintptr) {
-				syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_MARK, dnsFallbackMark)
-			})
-		},
-	}
-
 	tryServer := func(server string) *DNSResponseMessage {
-		c := &dns.Client{Net: "udp", Timeout: 2 * time.Second, Dialer: markedDialer}
+		// Use TCP so the query bypasses the UDP-only iptables DNS redirect rule.
+		c := &dns.Client{Net: "tcp", Timeout: 3 * time.Second}
 		msg := new(dns.Msg)
 		msg.SetQuestion(domain, qtype)
 		msg.RecursionDesired = true
@@ -984,7 +960,6 @@ func queryEgressDNS(domain string, qtype uint16) *DNSResponseMessage {
 }
 
 func addDNSRedirectRule() error {
-	addDNSFallbackExclusion()
 	cmd := iptCmd("iptables", "-t", "nat", "-A", "OUTPUT",
 		"-p", "udp", "--dport", "53",
 		"-j", "REDIRECT", "--to-port", strconv.Itoa(dnsLocalPort))
@@ -996,7 +971,6 @@ func addDNSRedirectRule() error {
 }
 
 func removeDNSRedirectRule() error {
-	removeDNSFallbackExclusion()
 	cmd := iptCmd("iptables", "-t", "nat", "-D", "OUTPUT",
 		"-p", "udp", "--dport", "53",
 		"-j", "REDIRECT", "--to-port", strconv.Itoa(dnsLocalPort))
