@@ -2,11 +2,10 @@
 
 **Cross-platform transparent tunneling platform. No TUN. No proxychains.** <br>
 [![Wiki](https://img.shields.io/badge/Documentation-Wiki-blue)](https://github.com/blue0x1/rosemary/wiki)
-[![License: GPLv3](https://img.shields.io/badge/License-GPLv3-brightgreen.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Release](https://img.shields.io/github/v/release/blue0x1/rosemary)](https://github.com/blue0x1/rosemary/releases)
-[![Downloads](https://img.shields.io/github/downloads/blue0x1/rosemary/total.svg)](https://github.com/blue0x1/rosemary/releases)
 ![Go Version](https://img.shields.io/badge/Go-1.25.0-00ADD8?logo=go)
 [![Go Report Card](https://goreportcard.com/badge/github.com/blue0x1/rosemary/rosemary)](https://goreportcard.com/report/github.com/blue0x1/rosemary/rosemary)
+[![Release](https://img.shields.io/github/v/release/blue0x1/rosemary)](https://github.com/blue0x1/rosemary/releases)
+[![Downloads](https://img.shields.io/github/downloads/blue0x1/rosemary/total.svg)](https://github.com/blue0x1/rosemary/releases)
 [![Stars](https://img.shields.io/github/stars/blue0x1/rosemary)](https://github.com/blue0x1/rosemary/stargazers)
 
 <br>
