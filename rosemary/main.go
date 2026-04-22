@@ -3506,7 +3506,7 @@ func startREPL() {
     ██   ██  ██████  ███████ ███████ ██      ██ ██   ██ ██   ██    ██    
 
                                                                     Coded by blue0x1
-                                                                    Version: 1.0.0
+                                                                    Version: 1.0.2
 `
 
 	if useANSI {
@@ -3519,7 +3519,7 @@ func startREPL() {
     ██   ██  ██████  ███████ ███████ ██      ██ ██   ██ ██   ██    ██    
 ` + colorDim + `
                                                                     Coded by blue0x1
-                                                                    Version: 1.0.0
+                                                                    Version: 1.0.2
 ` + colorReset
 	}
 
