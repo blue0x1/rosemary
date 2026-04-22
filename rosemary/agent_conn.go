@@ -726,9 +726,7 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		yamuxSessions[directConnectedAgentID] = yamuxSession
 		connLock.Unlock()
 	}
-	if yamuxErr != nil {
-		go startWSPingKeepalive(ws, directConnectedAgentID)
-	}
+	go startWSPingKeepalive(ws, directConnectedAgentID)
 	defer func() { cleanupAgentConn(directConnectedAgentID) }()
 
 	agentMsgLimiter := rate.NewLimiter(rate.Limit(1000), 2000)
