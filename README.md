@@ -119,6 +119,7 @@ The extension icon will appear in your browser toolbar.
 *Create and manage TCP/UDP port forwards through any agent*
 
 <img width="499" height="541" alt="image" src="https://github.com/user-attachments/assets/9647580c-4e6d-4343-9255-ee375358291e" />
+<img width="553" height="763" alt="image" src="https://github.com/user-attachments/assets/9c058119-c872-4847-b983-76247ee838f3" />
 
 
 
