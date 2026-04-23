@@ -141,7 +141,10 @@ The extension icon will appear in your browser toolbar.
 ### Web CLI Panel
 <img width="917" height="754" alt="image" src="https://github.com/user-attachments/assets/5c6d86b3-4425-4fc5-b5e0-613dc94c664e" />
 
+### Logs Panel
+*Real-time event streaming with filtering and export options*
 
+<img width="550" height="930" alt="image" src="https://github.com/user-attachments/assets/c7fe6d79-e16c-4a96-8e01-cc9583b0fec0" />
 
 
 ### SOCKS5 Proxy Management
@@ -317,6 +320,12 @@ exit                           Shutdown
 ---
 
 ## API
+
+> **Complete API Reference**
+> 
+> Full endpoint documentation with examples is available at:
+> ```
+> http://<server>:1024/docs
 
 Authenticate once to get a token, then use it for all requests.
 
