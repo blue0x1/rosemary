@@ -1,7 +1,7 @@
 # Rosemary
 
 **Cross-platform transparent tunneling platform. No TUN/TAP. No proxychains.No proxy settings.** <br>
-[![Wiki](https://img.shields.io/badge/Documentation-Wiki-blue)](https://github.com/blue0x1/rosemary/wiki)
+[![Docs](https://img.shields.io/badge/Documentation-GitBook-blue)](https://rosemary-2.gitbook.io)
 ![Go Version](https://img.shields.io/badge/Go-1.25.0-00ADD8?logo=go)
 [![Go Report Card](https://goreportcard.com/badge/github.com/blue0x1/rosemary/rosemary)](https://goreportcard.com/report/github.com/blue0x1/rosemary/rosemary)
 [![Release](https://img.shields.io/github/v/release/blue0x1/rosemary)](https://github.com/blue0x1/rosemary/releases)
