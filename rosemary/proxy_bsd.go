@@ -1902,8 +1902,12 @@ func startICMPBPFInterceptor() {
 			case <-stop:
 				return
 			default:
-				logVerbose("ICMP BPF: read: %v", err)
-				time.Sleep(5 * time.Millisecond)
+				if err == syscall.ENXIO || err == syscall.EBADF {
+					time.Sleep(500 * time.Millisecond)
+				} else {
+					logVerbose("ICMP BPF: read: %v", err)
+					time.Sleep(5 * time.Millisecond)
+				}
 				continue
 			}
 		}

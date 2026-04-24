@@ -164,10 +164,14 @@
     <div class="settings-area">
       <div class="settings-group">
         <div class="settings-group-title">Ports</div>
-        <div class="settings-row"><span>HTTP Dashboard</span><span id="s-http-port" class="mono">—</span></div>
-        <div class="settings-row"><span>TCP Proxy</span><span id="s-tcp-port" class="mono">—</span></div>
-        <div class="settings-row"><span>UDP Proxy</span><span id="s-udp-port" class="mono">—</span></div>
-        <div class="settings-row"><span>DNS Proxy</span><span id="s-dns-port" class="mono">—</span></div>
+        <div class="settings-row"><span>HTTP Dashboard</span><input type="number" id="s-http-port" class="port-input mono" min="1" max="65535"></div>
+        <div class="settings-row"><span>TCP Proxy</span><input type="number" id="s-tcp-port" class="port-input mono" min="1" max="65535"></div>
+        <div class="settings-row"><span>UDP Proxy</span><input type="number" id="s-udp-port" class="port-input mono" min="1" max="65535"></div>
+        <div class="settings-row"><span>DNS Proxy</span><input type="number" id="s-dns-port" class="port-input mono" min="1" max="65535"></div>
+        <div class="form-actions" style="margin-top:8px;">
+          <button class="btn-sm" id="save-ports-btn">Save</button>
+        </div>
+        <div id="ports-status" class="status-msg"></div>
       </div>
 
       <div class="settings-group">

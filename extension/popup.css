@@ -608,6 +608,7 @@ button { cursor: pointer; font-family: inherit; }
 }
 .settings-row:last-child { border-bottom: none; }
 .mono { font-family: var(--mono); color: var(--primary); }
+.port-input { width: 70px; padding: 2px 6px; font-size: 12px; font-family: var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--primary); text-align: right; }
 
 .key-display {
   display: flex;

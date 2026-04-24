@@ -859,17 +859,38 @@ function renderLogOutput(data) {
 //  SETTINGS TAB
 // ══════════════════════════════════════════════════
 async function loadSettings() {
-   
   const { key } = await chrome.storage.local.get('key').catch(() => ({}));
   $('s-current-key').textContent = key || '—';
 
   try {
     const d = await apiJSON('/api/v1/settings');
-    $('s-http-port').textContent = d.http_port || '—';
-    $('s-tcp-port').textContent  = d.tcp_port  || '—';
-    $('s-udp-port').textContent  = d.udp_port  || '—';
-    $('s-dns-port').textContent  = d.dns_port  || '—';
+    $('s-http-port').value = d.http_port || '';
+    $('s-tcp-port').value  = d.tcp_port  || '';
+    $('s-udp-port').value  = d.udp_port  || '';
+    $('s-dns-port').value  = d.dns_port  || '';
   } catch { /* best-effort */ }
+}
+
+async function savePorts() {
+  const http = parseInt($('s-http-port').value);
+  const tcp  = parseInt($('s-tcp-port').value);
+  const udp  = parseInt($('s-udp-port').value);
+  const dns  = parseInt($('s-dns-port').value);
+  const st   = $('ports-status');
+
+  if ([http, tcp, udp, dns].some(p => !p || p < 1 || p > 65535)) {
+    setStatus(st, 'Invalid port value.', 'err'); return;
+  }
+  setStatus(st, 'Saving…', '');
+  try {
+    const res = await api('/api/v1/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ http_port: http, tcp_port: tcp, udp_port: udp, dns_port: dns })
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    setStatus(st, 'Ports saved.', 'ok');
+  } catch (e) { setStatus(st, e.message, 'err'); }
 }
 
 async function regenKey() {
@@ -1012,6 +1033,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Settings
   $('regen-key-btn').addEventListener('click',   regenKey);
+  $('save-ports-btn').addEventListener('click',  savePorts);
   $('shutdown-btn').addEventListener('click',    doShutdown);
   $('switch-server-btn').addEventListener('click', doLogout);
   $('copy-key-btn').addEventListener('click', () => {
