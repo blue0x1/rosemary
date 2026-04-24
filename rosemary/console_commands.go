@@ -45,6 +45,7 @@ var consoleCmds = map[string]consoleCmdFn{
 	"exit":           consoleCmdExit,
 	"token":          consoleCmdToken,
 	"tag":            consoleCmdTag,
+	"clear":          consoleCmdClear,
 }
 
 func consoleCmdHelp(parts []string, out *strings.Builder) {
@@ -1247,4 +1248,8 @@ func consoleCmdTokenRevoke(args []string, out *strings.Builder) {
 	if !found {
 		out.WriteString(fmt.Sprintf(colorBoldRed+"[-]"+colorReset+" No token with id %s%s%s\n", colorYellow, targetID, colorReset))
 	}
+}
+
+func consoleCmdClear(parts []string, out *strings.Builder) {
+	out.WriteString("\033[2J\033[H")
 }

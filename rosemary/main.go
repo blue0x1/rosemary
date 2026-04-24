@@ -3536,7 +3536,7 @@ func startREPL() {
 		"help", "agents", "egress", "routes", "forwards", "forward", "rforward",
 		"socks", "ping", "discover", "portscan", "reconnect", "disconnect",
 		"connect", "tag", "port", "tcp-port", "udp-port", "dns-port",
-		"settings", "rotate-key", "load-config", "save-config",
+		"settings", "rotate-key", "load-config", "save-config", "clear",
 		"verbose", "token", "exit",
 	}
 
@@ -3615,6 +3615,7 @@ func startREPL() {
 		readline.PcItem("verbose"),
 		readline.PcItem("token", readline.PcItem("list"), readline.PcItem("create"), readline.PcItem("revoke")),
 		readline.PcItem("exit"),
+		readline.PcItem("clear"),
 	)
 
 	ghostPainter := &ghostTextPainter{bestMatch: ghostBestMatch}

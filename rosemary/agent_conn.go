@@ -499,17 +499,17 @@ func handleMsgPortScanRespWS(msg Message, sourceID string) {
 		colorYellow, resp.Target, colorReset,
 		resp.Proto,
 	)
-	appendCliLine(header)
+	broadcastToListeners(header)
 	isUDP := strings.ToLower(resp.Proto) == "udp"
 	for _, r := range resp.Results {
 		if r.Open {
 			if isUDP {
-				appendCliLine(fmt.Sprintf("  "+colorGreen+"open|filtered"+colorReset+" %5d\n", r.Port))
+				broadcastToListeners(fmt.Sprintf("  "+colorGreen+"open|filtered"+colorReset+" %5d\n", r.Port))
 			} else {
-				appendCliLine(fmt.Sprintf("  "+colorBoldGreen+"open"+colorReset+"          %5d\n", r.Port))
+				broadcastToListeners(fmt.Sprintf("  "+colorBoldGreen+"open"+colorReset+"          %5d\n", r.Port))
 			}
 		} else if r.Error != "" {
-			appendCliLine(fmt.Sprintf("  "+colorRed+"err"+colorReset+"           %5d %s\n", r.Port, r.Error))
+			broadcastToListeners(fmt.Sprintf("  "+colorRed+"err"+colorReset+"           %5d %s\n", r.Port, r.Error))
 		}
 	}
 }
@@ -519,17 +519,17 @@ func handleMsgPortScanRespBind(msg Message, sourceID string) {
 	if err := json.Unmarshal(msg.Payload, &resp); err != nil {
 		return
 	}
-	appendCliLine(fmt.Sprintf("Port scan from agent %s on %s (%s)\n", sourceID, resp.Target, resp.Proto))
+	broadcastToListeners(fmt.Sprintf("Port scan from agent %s on %s (%s)\n", sourceID, resp.Target, resp.Proto))
 	isUDP := strings.ToLower(resp.Proto) == "udp"
 	for _, r := range resp.Results {
 		if r.Open {
 			if isUDP {
-				appendCliLine(fmt.Sprintf("  open|filtered %5d\n", r.Port))
+				broadcastToListeners(fmt.Sprintf("  open|filtered %5d\n", r.Port))
 			} else {
-				appendCliLine(fmt.Sprintf("  open          %5d\n", r.Port))
+				broadcastToListeners(fmt.Sprintf("  open          %5d\n", r.Port))
 			}
 		} else if r.Error != "" {
-			appendCliLine(fmt.Sprintf("  err           %5d %s\n", r.Port, r.Error))
+			broadcastToListeners(fmt.Sprintf("  err           %5d %s\n", r.Port, r.Error))
 		}
 	}
 }
@@ -546,7 +546,7 @@ func handleMsgPingSweepRespWS(msg Message) {
 	for _, h := range resp.Results {
 		fmt.Fprintf(&output, "  "+colorGreen+"%-18s"+colorReset+"  "+colorDim+"%.1f ms"+colorReset+"\n", h.IP, float64(h.RTT))
 	}
-	appendCliLine(output.String())
+	broadcastToListeners(output.String())
 }
 
 func handleMsgPingSweepRespBind(msg Message) {
@@ -559,7 +559,7 @@ func handleMsgPingSweepRespBind(msg Message) {
 	for _, h := range resp.Results {
 		fmt.Fprintf(&output, "  %s  (%.1f ms)\n", h.IP, float64(h.RTT))
 	}
-	appendCliLine(output.String())
+	broadcastToListeners(output.String())
 }
 
 func handleMsgData(msg Message) {

@@ -1702,8 +1702,9 @@ function initCLI() {
                 history.length = 0;
                 historyIndex = 0;
                 localStorage.removeItem(HISTORY_KEY);
-                const out = document.getElementById('cli-output');
+                const out = document.getElementById('logs-output');
                 if (out) out.innerHTML = '';
+                lastDisplayedLogCount = 0;
                 return;
             }
 
