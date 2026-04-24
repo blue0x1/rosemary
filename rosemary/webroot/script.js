@@ -246,6 +246,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function processData(data) {
                 if (!data) return;
+                window.lastDashboardData = data;
 
                 const agentsTableBody = document.getElementById('agents-table-body');
                 const agentsArr = data.agents || [];
@@ -1568,22 +1569,143 @@ if (shutdownBtn) {
         if (settingsModal) settingsModal.style.display = 'none';
     }
 
+const cliCommands = [
+    'help','agents','egress','routes','forwards','forward','rforward','socks',
+    'ping','discover','portscan','reconnect','disconnect','connect','tag',
+    'port','tcp-port','udp-port','dns-port','settings','rotate-key',
+    'regenerate-key','load-config','save-config','verbose','token','exit'
+];
+
+const cliCommandArgs = {
+    'forward':    ['add','del'],
+    'rforward':   ['add','del','list'],
+    'routes':     ['enable','disable'],
+    'token':      ['list','create','revoke'],
+    'egress':     ['__agents__','none'],
+    'agents':     ['__agents__'],
+    'disconnect': ['__agents__','all'],
+    'reconnect':  ['__agents__'],
+    'ping':       ['__agents__'],
+    'discover':   ['__agents__'],
+    'portscan':   ['__agents__'],
+    'socks':      ['__agents__'],
+    'tag':        ['__agents__'],
+};
+
+function getConnectedAgentIDs() {
+    if (window.lastDashboardData && window.lastDashboardData.agents) {
+        return window.lastDashboardData.agents.map(a => a.id);
+    }
+    return [];
+}
+
+function cliGetSuggestions(value) {
+    const parts = value.split(/\s+/);
+    const word  = parts[parts.length - 1];
+
+    if (parts.length <= 1) {
+        return cliCommands.filter(c => c.startsWith(word));
+    }
+
+    const cmd  = parts[0];
+    const args = cliCommandArgs[cmd];
+    if (!args) return [];
+
+    const pool = args.flatMap(a => a === '__agents__' ? getConnectedAgentIDs() : [a]);
+    return pool.filter(a => a.startsWith(word));
+}
+
 function initCLI() {
-    const input = document.getElementById('cli-input');
+    const input   = document.getElementById('cli-input');
     if (!input) return;
 
-    const history = [];
-    let historyIndex = -1;
+    const HISTORY_KEY = 'rosemary_cli_history';
+    const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    let historyIndex = history.length;
+    let tabCandidates = [];
+    let tabIndex = 0;
+
+    function saveHistory() {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-500)));
+    }
+
+    const hint = document.createElement('div');
+    hint.id = 'cli-hint';
+    hint.style.cssText = 'position:absolute;bottom:100%;left:0;right:0;background:var(--bg-secondary,#1e1e1e);border:1px solid var(--border-color,#333);border-radius:4px;font-family:monospace;font-size:13px;max-height:160px;overflow-y:auto;z-index:999;display:none;';
+    input.parentElement.style.position = 'relative';
+    input.parentElement.appendChild(hint);
+
+    function showHint(candidates, activeWord) {
+        if (candidates.length === 0) { hint.style.display = 'none'; return; }
+        hint.innerHTML = candidates.map((c, i) =>
+            `<div style="padding:3px 10px;cursor:pointer;${i === tabIndex ? 'background:var(--accent,#4a9eff);color:#fff;' : ''}">${c}</div>`
+        ).join('');
+        hint.style.display = 'block';
+        hint.querySelectorAll('div').forEach((el, i) => {
+            el.addEventListener('mousedown', ev => {
+                ev.preventDefault();
+                applyCompletion(candidates[i]);
+                hint.style.display = 'none';
+            });
+        });
+    }
+
+    function applyCompletion(candidate) {
+        const parts = input.value.split(/\s+/);
+        parts[parts.length - 1] = candidate;
+        input.value = parts.join(' ') + ' ';
+        tabCandidates = [];
+    }
+
+    function hideHint() { hint.style.display = 'none'; tabCandidates = []; }
 
     input.addEventListener('keydown', function (e) {
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            const val = this.value;
+            if (tabCandidates.length === 0) {
+                tabCandidates = cliGetSuggestions(val);
+                tabIndex = 0;
+            } else {
+                tabIndex = (tabIndex + 1) % tabCandidates.length;
+            }
+            if (tabCandidates.length === 1) {
+                applyCompletion(tabCandidates[0]);
+                hideHint();
+            } else if (tabCandidates.length > 1) {
+                const parts = val.split(/\s+/);
+                applyCompletion(tabCandidates[tabIndex]);
+                showHint(tabCandidates, parts[parts.length - 1]);
+            }
+            return;
+        }
+
+        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') {
+            tabCandidates = [];
+            hideHint();
+        }
+
+        if (e.key === 'Escape') { hideHint(); return; }
+
         if (e.key === 'Enter') {
+            hideHint();
             const cmd = this.value.trim();
             if (!cmd) return;
 
             appendLog('rosemary> ' + cmd);
             history.push(cmd);
-            historyIndex = history.length;  
+            historyIndex = history.length;
+            saveHistory();
             this.value = '';
+
+            if (cmd === 'clear') {
+                history.length = 0;
+                historyIndex = 0;
+                localStorage.removeItem(HISTORY_KEY);
+                const out = document.getElementById('cli-output');
+                if (out) out.innerHTML = '';
+                return;
+            }
 
             fetch('/api/cli', {
                 method: 'POST',
@@ -1611,6 +1733,22 @@ function initCLI() {
             e.preventDefault();
         }
     });
+
+    input.addEventListener('input', function () {
+        tabCandidates = [];
+        const parts = this.value.split(/\s+/);
+        if (parts.length <= 1 && this.value) {
+            const suggestions = cliGetSuggestions(this.value);
+            if (suggestions.length > 0 && suggestions.length <= 10) {
+                tabIndex = -1;
+                showHint(suggestions, '');
+                return;
+            }
+        }
+        hideHint();
+    });
+
+    document.addEventListener('click', e => { if (e.target !== input) hideHint(); });
 }
 
 
@@ -1627,10 +1765,12 @@ function ansiToHtml(text) {
         [ESC+'[2m']:  '<span class="ansi-dim">',
         
         [ESC+'[38;2;224;82;82m']:   '<span class="ansi-red">',
+        [ESC+'[38;2;220;20;60m']:   '<span class="ansi-red">',
         [ESC+'[38;2;46;204;113m']:  '<span class="ansi-green">',
         [ESC+'[38;2;255;192;203m']: '<span class="ansi-yellow">',
         [ESC+'[38;2;95;158;160m']:  '<span class="ansi-cyan">',
         [ESC+'[1;38;2;224;82;82m']:   '<span class="ansi-bold-red">',
+        [ESC+'[1;38;2;220;20;60m']:   '<span class="ansi-bold-red">',
         [ESC+'[1;38;2;46;204;113m']:  '<span class="ansi-bold-green">',
         [ESC+'[1;38;2;219;112;147m']: '<span class="ansi-bold-yellow">',
         [ESC+'[1;38;2;95;158;160m']:  '<span class="ansi-bold-cyan">',

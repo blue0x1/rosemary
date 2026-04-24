@@ -32,7 +32,6 @@ var consoleCmds = map[string]consoleCmdFn{
 	"tcp-port":       consoleCmdTCPPort,
 	"udp-port":       consoleCmdUDPPort,
 	"dns-port":       consoleCmdDNSPort,
-	"regenerate-key": consoleCmdRegenerateKey,
 	"rotate-key":     consoleCmdRotateKey,
 	"settings":       consoleCmdSettings,
 	"ping":           consoleCmdPing,
@@ -45,12 +44,14 @@ var consoleCmds = map[string]consoleCmdFn{
 	"verbose":        consoleCmdVerbose,
 	"exit":           consoleCmdExit,
 	"token":          consoleCmdToken,
+	"tag":            consoleCmdTag,
 }
 
 func consoleCmdHelp(parts []string, out *strings.Builder) {
 	args := parts[1:]
 	helpTopics := map[string]string{
-		"agents":      "agents\n  List all connected agents with OS, hostname, subnets, last seen.",
+		"agents":      "agents\n  List all connected agents with OS, hostname, subnets, last seen, and internet status.\n\nagents <agent-id>\n  Show full details for a specific agent including all subnets, tag, and connection time.",
+		"tag":         "tag <agent-id> <label>\n  Set a display tag for an agent.\n  Example:\n    tag agent-2 dc-east\n\ntag <agent-id> \"\"\n  Clear the tag for an agent.",
 		"routes":      "routes [list]\n  List all registered subnets with agent and enabled/disabled state.\n\nroutes enable <subnet>\n  Re-enable routing for a disabled subnet.\n\nroutes disable <subnet>\n  Disable routing for a subnet without removing it from the table.",
 		"forwards":    "forwards\n  List all active port forwards.",
 		"forward":     "forward add <local-port> <agent-id> <target-host> <target-port> [tcp|udp]\n  Add a port forward: agent listens on local-port and proxies to target.\n  Protocol defaults to tcp. Example:\n    forward add 8080 agent-1 192.168.1.10 80\n    forward add 5353 agent-1 8.8.8.8 53 udp\n\nforward del <listener-id>\n  Remove a port forward by its ID.",
@@ -82,7 +83,7 @@ func consoleCmdHelp(parts []string, out *strings.Builder) {
 			out.WriteString(topic + "\n")
 		} else {
 			out.WriteString(colorBoldYellow + "No help available for '" + args[0] + "'" + colorReset + "\n")
-			out.WriteString("Available topics: " + colorCyan + "agents, routes, forwards, forward, rforward, socks, ping, discover, portscan, reconnect, disconnect, connect, port, tcp-port, udp-port, dns-port, settings, rotate-key, load-config, save-config, token, exit" + colorReset + "\n")
+			out.WriteString("Available topics: " + colorCyan + "agents, routes, forwards, forward, rforward, socks, ping, discover, portscan, reconnect, disconnect, connect, tag, port, tcp-port, udp-port, dns-port, settings, rotate-key, load-config, save-config, token, exit" + colorReset + "\n")
 		}
 		return
 	}
@@ -101,6 +102,7 @@ func consoleCmdHelp(parts []string, out *strings.Builder) {
 	out.WriteString("  " + colorBoldCyan + "reconnect" + colorReset + "            - tell agent to reconnect\n")
 	out.WriteString("  " + colorBoldCyan + "disconnect" + colorReset + "           - disconnect an agent (use 'all' for all agents)\n")
 	out.WriteString("  " + colorBoldCyan + "connect" + colorReset + "              - connect to bind agent\n")
+	out.WriteString("  " + colorBoldCyan + "tag" + colorReset + "                  - set or clear a display tag for an agent\n")
 	out.WriteString("  " + colorBoldCyan + "port / tcp-port / udp-port / dns-port" + colorReset + " - change ports\n")
 	out.WriteString("  " + colorBoldCyan + "settings" + colorReset + "             - show current config\n")
 	out.WriteString("  " + colorBoldCyan + "rotate-key" + colorReset + "           - generate new encryption key\n")
@@ -112,17 +114,99 @@ func consoleCmdHelp(parts []string, out *strings.Builder) {
 
 func consoleCmdAgents(parts []string, out *strings.Builder) {
 	connLock.Lock()
+	defer connLock.Unlock()
+
 	if len(connections) == 0 {
 		out.WriteString(colorYellow + "No agents connected." + colorReset + "\n")
-	} else {
-		out.WriteString(colorBoldWhite + "ID\t\tSubnets\t\tOS\tHostname\tUsername\tLastSeen" + colorReset + "\n")
-		for id, info := range connections {
-			out.WriteString(fmt.Sprintf("%s%s%s\t%v\t%s\t%s\t%s\t%s\n",
-				colorCyan, id, colorReset,
-				info.Subnets, info.OS, info.Hostname, info.Username, info.LastSeen.Format("15:04:05")))
+		return
+	}
+
+	if len(parts) >= 2 {
+		id := parts[1]
+		info, ok := connections[id]
+		if !ok {
+			out.WriteString(colorRed + "Agent not found: " + id + colorReset + "\n")
+			return
+		}
+		internet := colorRed + "No" + colorReset
+		if info.HasInternet {
+			internet = colorGreen + "Yes" + colorReset
+		}
+		agentTagsMu.Lock()
+		tag := agentTags[id]
+		agentTagsMu.Unlock()
+		out.WriteString(colorBoldWhite + "Agent: " + colorCyan + id + colorReset + "\n")
+		out.WriteString(fmt.Sprintf("  %-14s %s\n", "OS:", info.OS))
+		out.WriteString(fmt.Sprintf("  %-14s %s\n", "Hostname:", info.Hostname))
+		out.WriteString(fmt.Sprintf("  %-14s %s\n", "Username:", info.Username))
+		out.WriteString(fmt.Sprintf("  %-14s %s\n", "Connected:", info.ConnectedAt.Format("2006-01-02 15:04:05")))
+		out.WriteString(fmt.Sprintf("  %-14s %s\n", "Last Seen:", info.LastSeen.Format("15:04:05")))
+		out.WriteString(fmt.Sprintf("  %-14s %s\n", "Internet:", internet))
+		if tag != "" {
+			out.WriteString(fmt.Sprintf("  %-14s %s\n", "Tag:", tag))
+		}
+		out.WriteString(fmt.Sprintf("  %-14s\n", "Subnets:"))
+		for _, s := range info.Subnets {
+			out.WriteString(fmt.Sprintf("    - %s\n", s))
+		}
+		return
+	}
+
+	out.WriteString(colorBoldWhite + fmt.Sprintf("%-14s %-8s %-22s %-22s %-12s %-10s %-8s\n",
+		"ID", "OS", "Hostname", "Subnets", "Username", "LastSeen", "Internet") + colorReset)
+	for id, info := range connections {
+		subnets := "None"
+		if len(info.Subnets) == 1 {
+			subnets = info.Subnets[0]
+		} else if len(info.Subnets) > 1 {
+			subnets = fmt.Sprintf("%s (+%d)", info.Subnets[0], len(info.Subnets)-1)
+		}
+		internet := "No"
+		if info.HasInternet {
+			internet = "Yes"
+		}
+		out.WriteString(fmt.Sprintf("%s%-14s%s %-8s %-22s %-22s %-12s %-10s %-8s\n",
+			colorCyan, id, colorReset,
+			info.OS, info.Hostname, subnets, info.Username, info.LastSeen.Format("15:04:05"), internet))
+	}
+}
+
+func consoleCmdTag(parts []string, out *strings.Builder) {
+	if len(parts) < 3 {
+		out.WriteString("Usage: tag <agent-id> <label>  (use \"\" to clear)\n")
+		return
+	}
+	agentID := parts[1]
+	tag := strings.TrimSpace(strings.Join(parts[2:], " "))
+	tag = strings.Trim(tag, "\"")
+
+	connLock.Lock()
+	_, exists := connections[agentID]
+	connLock.Unlock()
+	if !exists {
+		out.WriteString(colorRed + "Agent not found: " + agentID + colorReset + "\n")
+		return
+	}
+	if len(tag) > 64 {
+		out.WriteString(colorRed + "Tag too long (max 64 characters)." + colorReset + "\n")
+		return
+	}
+	for _, ch := range tag {
+		if ch < 0x20 || ch == '<' || ch == '>' || ch == '&' || ch == '"' || ch == '\'' {
+			out.WriteString(colorRed + "Tag contains invalid characters." + colorReset + "\n")
+			return
 		}
 	}
-	connLock.Unlock()
+	agentTagsMu.Lock()
+	if tag == "" {
+		delete(agentTags, agentID)
+		agentTagsMu.Unlock()
+		out.WriteString(colorGreen + "[+] Tag cleared for " + agentID + colorReset + "\n")
+	} else {
+		agentTags[agentID] = tag
+		agentTagsMu.Unlock()
+		out.WriteString(fmt.Sprintf(colorGreen+"[+] Tag set: %s -> %s"+colorReset+"\n", agentID, tag))
+	}
 }
 
 func consoleCmdEgress(parts []string, out *strings.Builder) {
@@ -601,18 +685,6 @@ func consoleCmdDNSPort(parts []string, out *strings.Builder) {
 	} else {
 		out.WriteString(fmt.Sprintf(colorBoldGreen+"[+]"+colorReset+" DNS port already %s%d%s", colorYellow, p, colorReset))
 	}
-}
-
-func consoleCmdRegenerateKey(parts []string, out *strings.Builder) {
-	newKey := make([]byte, 32)
-	rand.Read(newKey)
-	setEncryptionKey(newKey)
-	encryptionKey = newKey
-	keyB64 := base64.URLEncoding.EncodeToString(newKey)
-	out.WriteString(fmt.Sprintf(colorBoldGreen+"[+]"+colorReset+" New encryption key: "+colorGreen+"%s"+colorReset+"\n", keyB64))
-	out.WriteString(colorBoldYellow + "[!]" + colorReset + " Disconnecting all agents...\n")
-	disconnectAllAgents()
-	out.WriteString(fmt.Sprintf(colorBoldGreen+"[+]"+colorReset+" Done. Reconnect agents with new key: "+colorGreen+"-key %s"+colorReset+"\n", keyB64))
 }
 
 func consoleCmdRotateKey(parts []string, out *strings.Builder) {

@@ -378,15 +378,6 @@ type PingRecord struct {
 	Error   string    `json:"error,omitempty"`
 }
 
-type scanKey struct {
-	AgentID string
-	Target  string
-	Proto   string
-	Ports   string
-}
-
-var scanStartTimes = make(map[scanKey]time.Time)
-var scanStartTimesMu sync.Mutex
 
 // ===== SETTINGS GLOBALS =====
 var (
@@ -3494,6 +3485,24 @@ func handleConsoleCommand(line string) string {
 	return out.String()
 }
 
+type ghostTextPainter struct {
+	bestMatch func(string) string
+}
+
+func (p *ghostTextPainter) Paint(line []rune, pos int) []rune {
+	if pos == 0 || pos != len(line) {
+		return line
+	}
+	suggestion := p.bestMatch(string(line))
+	if suggestion == "" || len(suggestion) <= len(line) {
+		return line
+	}
+	suffix := suggestion[len(line):]
+	n := len([]rune(suffix))
+	ghost := "\x1b[2m" + suffix + "\x1b[0m\x1b[" + strconv.Itoa(n) + "D"
+	return append(line, []rune(ghost)...)
+}
+
 func startREPL() {
 	useANSI := runtime.GOOS != "windows"
 
@@ -3506,28 +3515,135 @@ func startREPL() {
     ██   ██  ██████  ███████ ███████ ██      ██ ██   ██ ██   ██    ██    
 
                                                                     Coded by blue0x1
-                                                                    Version: 1.0.3
+                                                                    Version: 1.0.4
 `
 
 	if useANSI {
 		prompt = colorYellow + "rosemary> " + colorReset
 		asciiArt = colorYellow + `
-    ██████   ██████  ███████ ███████ ███    ███  █████  ██████  ██    ██ 
-    ██   ██ ██    ██ ██      ██      ████  ████ ██   ██ ██   ██  ██  ██  
-    ██████  ██    ██ ███████ █████   ██ ████ ██ ███████ ██████    ████   
-    ██   ██ ██    ██      ██ ██      ██  ██  ██ ██   ██ ██   ██    ██    
-    ██   ██  ██████  ███████ ███████ ██      ██ ██   ██ ██   ██    ██    
+    ██████   ██████  ███████ ███████ ███    ███  █████  ██████  ██    ██
+    ██   ██ ██    ██ ██      ██      ████  ████ ██   ██ ██   ██  ██  ██
+    ██████  ██    ██ ███████ █████   ██ ████ ██ ███████ ██████    ████
+    ██   ██ ██    ██      ██ ██      ██  ██  ██ ██   ██ ██   ██    ██
+    ██   ██  ██████  ███████ ███████ ██      ██ ██   ██ ██   ██    ██
 ` + colorDim + `
                                                                     Coded by blue0x1
-                                                                    Version: 1.0.3
+                                                                    Version: 1.0.4
 ` + colorReset
 	}
 
-	rl, err := readline.New(prompt)
+	topLevelCmds := []string{
+		"help", "agents", "egress", "routes", "forwards", "forward", "rforward",
+		"socks", "ping", "discover", "portscan", "reconnect", "disconnect",
+		"connect", "tag", "port", "tcp-port", "udp-port", "dns-port",
+		"settings", "rotate-key", "load-config", "save-config",
+		"verbose", "token", "exit",
+	}
+
+	getAgentIDs := func() []string {
+		connLock.Lock()
+		defer connLock.Unlock()
+		ids := make([]string, 0, len(connections))
+		for id := range connections {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+
+	agentIDs := func(string) []string { return getAgentIDs() }
+
+	var replHistory []string
+
+	ghostBestMatch := func(input string) string {
+		if input == "" {
+			return ""
+		}
+		for _, h := range replHistory {
+			if strings.HasPrefix(h, input) {
+				return h
+			}
+		}
+		var best string
+		for _, cmd := range topLevelCmds {
+			if strings.HasPrefix(cmd, input) {
+				if best == "" || len(cmd) < len(best) {
+					best = cmd
+				}
+			}
+		}
+		if best != "" {
+			return best
+		}
+		parts := strings.SplitN(input, " ", 2)
+		if len(parts) == 2 {
+			for _, id := range getAgentIDs() {
+				candidate := parts[0] + " " + id
+				if strings.HasPrefix(candidate, input) {
+					if best == "" || len(candidate) < len(best) {
+						best = candidate
+					}
+				}
+			}
+		}
+		return best
+	}
+
+	completer := readline.NewPrefixCompleter(
+		readline.PcItem("help"),
+		readline.PcItem("agents", readline.PcItemDynamic(agentIDs)),
+		readline.PcItem("egress", readline.PcItemDynamic(agentIDs), readline.PcItem("none")),
+		readline.PcItem("routes", readline.PcItem("enable"), readline.PcItem("disable")),
+		readline.PcItem("forwards"),
+		readline.PcItem("forward", readline.PcItem("add"), readline.PcItem("del")),
+		readline.PcItem("rforward", readline.PcItem("add"), readline.PcItem("del"), readline.PcItem("list")),
+		readline.PcItem("socks", readline.PcItemDynamic(agentIDs)),
+		readline.PcItem("ping", readline.PcItemDynamic(agentIDs)),
+		readline.PcItem("discover", readline.PcItemDynamic(agentIDs)),
+		readline.PcItem("portscan", readline.PcItemDynamic(agentIDs)),
+		readline.PcItem("reconnect", readline.PcItemDynamic(agentIDs)),
+		readline.PcItem("disconnect", readline.PcItemDynamic(agentIDs), readline.PcItem("all")),
+		readline.PcItem("connect"),
+		readline.PcItem("tag", readline.PcItemDynamic(agentIDs)),
+		readline.PcItem("port"),
+		readline.PcItem("tcp-port"),
+		readline.PcItem("udp-port"),
+		readline.PcItem("dns-port"),
+		readline.PcItem("settings"),
+		readline.PcItem("rotate-key"),
+		readline.PcItem("load-config"),
+		readline.PcItem("save-config"),
+		readline.PcItem("verbose"),
+		readline.PcItem("token", readline.PcItem("list"), readline.PcItem("create"), readline.PcItem("revoke")),
+		readline.PcItem("exit"),
+	)
+
+	ghostPainter := &ghostTextPainter{bestMatch: ghostBestMatch}
+
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          prompt,
+		AutoComplete:    completer,
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+		HistoryLimit:    500,
+		HistoryFile:     os.ExpandEnv("$HOME/.rosemary_history"),
+		Painter:         ghostPainter,
+	})
 	if err != nil {
 		log.Printf("REPL init error: %v", err)
 		return
 	}
+
+	rl.Config.SetListener(func(line []rune, pos int, key rune) ([]rune, int, bool) {
+		const charForward = 6
+		if key == charForward && pos == len(line) {
+			suggestion := ghostBestMatch(string(line))
+			if suggestion != "" && len(suggestion) > len(line) {
+				newLine := []rune(suggestion)
+				return newLine, len(newLine), true
+			}
+		}
+		return nil, 0, false
+	})
 	defer rl.Close()
 
 	fmt.Println(asciiArt)
@@ -3550,6 +3666,12 @@ func startREPL() {
 		}
 		if err != nil {
 			break
+		}
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			replHistory = append([]string{trimmed}, replHistory...)
+			if len(replHistory) > 500 {
+				replHistory = replHistory[:500]
+			}
 		}
 		out := handleConsoleCommand(line)
 		if out != "" {

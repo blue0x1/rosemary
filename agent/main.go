@@ -42,8 +42,7 @@ import (
 	"syscall"
 	"time"
 
-	portscanner "github.com/anvie/port-scanner"
-	"github.com/gorilla/websocket"
+"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
 	"github.com/miekg/dns"
 	"golang.org/x/net/icmp"
@@ -1163,16 +1162,6 @@ func doLocalPortScan(req PortScanRequest) []PortScanResult {
 	return results
 }
 
-func scanTCPWithLibrary(target string, ports []int) []PortScanResult {
-	ps := portscanner.NewPortScanner(target, 2*time.Second, 200)
-	var results []PortScanResult
-	for _, p := range ports {
-		if ps.IsOpen(p) {
-			results = append(results, PortScanResult{Port: p, Open: true})
-		}
-	}
-	return results
-}
 
 // ── Signal / cleanup ──────────────────────────────────────────────────────────
 
