@@ -568,9 +568,18 @@ public class RosemaryAgent {
         await SendMsg(write, "ping-sweep-response", "{\"subnet\":\"" + JE(subnet) + "\",\"results\":" + rj + "}", _agentId);
     }
 
+    static bool IsValidPingTarget(string t) {
+        return !string.IsNullOrEmpty(t) && t.Length <= 253 && Regex.IsMatch(t, @"^[a-zA-Z0-9.\-:]+$");
+    }
+
     async Task HandleICMP(RmWriteFunc write, string p) {
         string target = JStr(p, "target"); int count = JInt(p, "count", 1); int tms = JInt(p, "timeout_ms", 1000);
         if (count < 1) count = 1;
+        if (!IsValidPingTarget(target)) {
+            for (int i = 1; i <= count; i++)
+                await SendMsg(write, "icmp-response", "{\"target\":\"" + JE(target) + "\",\"seq\":" + i + ",\"success\":false,\"rtt_ms\":0,\"error\":\"invalid target\"}", _agentId);
+            return;
+        }
         for (int i = 1; i <= count; i++) {
             bool ok = false; double rttMs = 0; string errStr = "";
             try {
@@ -598,6 +607,10 @@ public class RosemaryAgent {
     async Task HandleICMPProxy(RmWriteFunc write, string p) {
         string cid = JStr(p, "conn_id"), target = JStr(p, "target"); int tms = JInt(p, "timeout_ms", 1000);
         bool ok = false; double rttMs = 0; string errStr = "";
+        if (!IsValidPingTarget(target)) {
+            await SendMsg(write, "icmp_proxy_response", "{\"conn_id\":\"" + cid + "\",\"success\":false,\"rtt_ms\":0,\"error\":\"invalid target\"}", _agentId);
+            return;
+        }
         try {
             using (var ping = new Ping()) {
                 var reply = await ping.SendPingAsync(target, tms);
