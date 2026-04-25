@@ -717,8 +717,8 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	connLock.Unlock()
 
 	yamuxCfg := yamux.DefaultConfig()
-	yamuxCfg.KeepAliveInterval = 90 * time.Second
-	yamuxCfg.ConnectionWriteTimeout = 30 * time.Second
+	yamuxCfg.KeepAliveInterval = 60 * time.Second
+	yamuxCfg.ConnectionWriteTimeout = 120 * time.Second
 	yamuxCfg.LogOutput = io.Discard
 	yamuxSession, yamuxErr := yamux.Server(newWSNetConn(ws), yamuxCfg)
 	if yamuxErr == nil {
@@ -750,11 +750,12 @@ func handleBindAgentConn(conn net.Conn, state *bindConnectState) {
 	if tc, ok := conn.(*net.TCPConn); ok {
 		tc.SetKeepAlive(true)
 		tc.SetKeepAlivePeriod(15 * time.Second)
+		tc.SetNoDelay(true)
 	}
 
 	yamuxCfg := yamux.DefaultConfig()
-	yamuxCfg.KeepAliveInterval = 30 * time.Second
-	yamuxCfg.ConnectionWriteTimeout = 60 * time.Second
+	yamuxCfg.KeepAliveInterval = 60 * time.Second
+	yamuxCfg.ConnectionWriteTimeout = 120 * time.Second
 	yamuxCfg.LogOutput = io.Discard
 	yamuxSession, err := yamux.Server(conn, yamuxCfg)
 	if err != nil {
@@ -839,7 +840,7 @@ func startWSPingKeepalive(ws *websocket.Conn, connID string) {
 		if !alive {
 			return
 		}
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(30 * time.Second)
 		if err := ws.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
 			ws.Close()
 			return

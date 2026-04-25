@@ -44,8 +44,8 @@ var agentBufPool = sync.Pool{New: func() interface{} { b := make([]byte, 64*1024
 
 func agentYamuxConfig() *yamux.Config {
 	cfg := yamux.DefaultConfig()
-	cfg.KeepAliveInterval = 30 * time.Second
-	cfg.ConnectionWriteTimeout = 60 * time.Second
+	cfg.KeepAliveInterval = 60 * time.Second
+	cfg.ConnectionWriteTimeout = 120 * time.Second
 	cfg.LogOutput = io.Discard
 	return cfg
 }
@@ -153,7 +153,16 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
-		NetDialContext:   (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 15 * time.Second}).DialContext,
+		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 15 * time.Second}
+			conn, err := d.DialContext(ctx, network, addr)
+			if err == nil {
+				if tc, ok := conn.(*net.TCPConn); ok {
+					tc.SetNoDelay(true)
+				}
+			}
+			return conn, err
+		},
 	}
 	wsHeaders := http.Header{
 		"User-Agent": []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"},
@@ -873,6 +882,7 @@ func runAgentBind(bindAddr, keyBase64 string, agentStop <-chan struct{}) {
 		if tc, ok := conn.(*net.TCPConn); ok {
 			tc.SetKeepAlive(true)
 			tc.SetKeepAlivePeriod(15 * time.Second)
+			tc.SetNoDelay(true)
 		}
 		go runAgentBindSession(conn, agentStop)
 	}
