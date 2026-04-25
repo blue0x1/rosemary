@@ -747,7 +747,16 @@ func handleBindAgentConn(conn net.Conn, state *bindConnectState) {
 	defer conn.Close()
 	agentIP := strings.Split(conn.RemoteAddr().String(), ":")[0]
 
-	yamuxSession, err := yamux.Server(conn, yamux.DefaultConfig())
+	if tc, ok := conn.(*net.TCPConn); ok {
+		tc.SetKeepAlive(true)
+		tc.SetKeepAlivePeriod(15 * time.Second)
+	}
+
+	yamuxCfg := yamux.DefaultConfig()
+	yamuxCfg.KeepAliveInterval = 30 * time.Second
+	yamuxCfg.ConnectionWriteTimeout = 60 * time.Second
+	yamuxCfg.LogOutput = io.Discard
+	yamuxSession, err := yamux.Server(conn, yamuxCfg)
 	if err != nil {
 		log.Printf("handleBindAgentConn: yamux server: %v", err)
 		return

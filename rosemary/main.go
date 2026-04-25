@@ -3241,6 +3241,9 @@ func startAgentWatchdog() {
 				if ws, wsOk := directConnections[info.DirectWSConnID]; wsOk {
 					logVerbose("[WARN]  Watchdog: evicting stale agent %s (no heartbeat for 90s)", agentID)
 					ws.Close()
+				} else if sess, sessOk := yamuxSessions[info.DirectWSConnID]; sessOk {
+					logVerbose("[WARN]  Watchdog: evicting stale bind agent %s (no heartbeat for 90s)", agentID)
+					sess.Close()
 				}
 			}
 			connLock.Unlock()

@@ -870,6 +870,10 @@ func runAgentBind(bindAddr, keyBase64 string, agentStop <-chan struct{}) {
 			continue
 		}
 		logVerbose("agent-bind: server connected from %s", conn.RemoteAddr())
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.SetKeepAlive(true)
+			tc.SetKeepAlivePeriod(15 * time.Second)
+		}
 		go runAgentBindSession(conn, agentStop)
 	}
 }
