@@ -267,9 +267,9 @@ Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY -Verbose
 
 | Parameter | Description |
 |-----------|-------------|
-| `-Key` | Base64 encryption key — must match the server |
+| `-Key` | Base64 encryption key - must match the server |
 | `-Mode` | `agent` (outbound) or `agent-bind` (inbound) |
-| `-Server` | Server address `host:port` — required in agent mode |
+| `-Server` | Server address `host:port` - required in agent mode |
 | `-Listen` | Bind address for agent-bind mode (default `0.0.0.0:9001`) |
 | `-Background` | Relaunch as a hidden background process and return immediately |
 | `-Verbose` | Show connection and session diagnostic output |
