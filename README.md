@@ -242,8 +242,6 @@ rosemary> connect agent-ip:9001
 
 `Invoke-Rosemary.ps1` is a pure PowerShell agent with no dependencies.
 
-### Usage
-
 ```powershell
 # Import
 . .\Invoke-Rosemary.ps1
