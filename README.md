@@ -239,7 +239,7 @@ rosemary> connect agent-ip:9001
 
 ## 4. PowerShell Agent (Invoke-Rosemary)
 
-For Windows hosts where dropping a binary is not ideal, `Invoke-Rosemary.ps1` is a pure PowerShell agent with no dependencies.
+`Invoke-Rosemary.ps1` is a pure PowerShell agent with no dependencies.
 
 ### Usage
 
