@@ -237,7 +237,42 @@ Once connected, the agent's subnets are automatically routed through it.
 rosemary> connect agent-ip:9001
 ```
 
-### 4. Egress: Route All Internet Traffic
+## 4. PowerShell Agent (Invoke-Rosemary)
+
+For Windows hosts where dropping a binary is not ideal, `Invoke-Rosemary.ps1` is a pure PowerShell agent with no dependencies.
+
+### Usage
+
+```powershell
+# Import
+. .\Invoke-Rosemary.ps1
+
+# Agent mode (connects to server)
+Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY
+
+# Bind mode (server connects to agent)
+Invoke-Rosemary -Mode agent-bind -Listen 0.0.0.0:9001 -Key YOUR_KEY
+
+# Run silently in background (hidden window)
+Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY -Background
+
+# Verbose output for diagnostics
+Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY -Verbose
+```
+
+### Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `-Key` | Base64 encryption key — must match the server |
+| `-Mode` | `agent` (outbound) or `agent-bind` (inbound) |
+| `-Server` | Server address `host:port` — required in agent mode |
+| `-Listen` | Bind address for agent-bind mode (default `0.0.0.0:9001`) |
+| `-Background` | Relaunch as a hidden background process and return immediately |
+| `-Verbose` | Show connection and session diagnostic output |
+
+
+### 5. Egress: Route All Internet Traffic
 
 ```bash
 rosemary> egress agent-1
