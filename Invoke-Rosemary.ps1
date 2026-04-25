@@ -874,13 +874,35 @@ function Invoke-Rosemary {
     Invoke-Rosemary -Key abcdefghijklmnopqrstuvwxyz012345= -Mode agent-bind -Listen 0.0.0.0:9001
 #>
     param(
-        [Parameter(Mandatory=$true)][string]$Key,
+        [string]$Key = "",
         [string]$Server = "",
         [string]$Path = "/ws",
         [string]$Mode = "agent",
         [string]$Listen = "0.0.0.0:9001",
-        [switch]$Background
+        [switch]$Background,
+        [switch]$Help
     )
+    if ($Help -or $PSBoundParameters.Count -eq 0) {
+        Write-Host ''
+        Write-Host '  Usage: Invoke-Rosemary -Key KEY [options]'
+        Write-Host ''
+        Write-Host '  Parameters:'
+        Write-Host '    -Key        BASE64     Encryption key (required, must match server)'
+        Write-Host '    -Mode       MODE       agent (default) | agent-bind'
+        Write-Host '    -Server     HOST:PORT  Server address  required in agent mode'
+        Write-Host '    -Listen     HOST:PORT  Bind address for agent-bind mode (default: 0.0.0.0:9001)'
+        Write-Host '    -Background            Run silently in a hidden background window'
+        Write-Host '    -Verbose               Show connection and session diagnostic output'
+        Write-Host '    -Help                  Show this help'
+        Write-Host ''
+        Write-Host '  Examples:'
+        Write-Host '    Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY'
+        Write-Host '    Invoke-Rosemary -Mode agent-bind -Listen 0.0.0.0:9001 -Key YOUR_KEY'
+        Write-Host '    Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY -Background'
+        Write-Host ''
+        return
+    }
+    if (-not $Key) { Write-Error "Key is required. Run Invoke-Rosemary -Help for usage."; return }
     [RosemaryAgent]::Verbose = $PSBoundParameters.ContainsKey('Verbose')
     if ($Background) {
         $call = "Invoke-Rosemary -Key '" + ($Key -replace "'","''") + "' -Mode '$Mode' -Listen '$Listen'"
