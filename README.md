@@ -247,6 +247,9 @@ For Windows hosts where dropping a binary is not ideal, `Invoke-Rosemary.ps1` is
 # Import
 . .\Invoke-Rosemary.ps1
 
+# Help
+Invoke-Rosemary -Help
+
 # Agent mode (connects to server)
 Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY
 
