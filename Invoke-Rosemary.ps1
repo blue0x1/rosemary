@@ -893,9 +893,11 @@ function Invoke-Rosemary {
         return
     }
     if ($Mode -eq "agent-bind") {
+        Write-Host "Running in agent-bind mode"
         [RosemaryAgent]::StartBind($Listen, $Key)
     } else {
         if (-not $Server) { Write-Error "Server is required in agent mode (-Server host:port)"; return }
+        Write-Host "Running in agent mode"
         $agent = [RosemaryAgent]::new($Key)
         $agent.RunWSBlocking($Server, $Path)
     }
