@@ -25,7 +25,7 @@ Rosemary deploys lightweight agents on remote hosts and transparently intercepts
 - [Platforms](#platforms)
 - [Screenshots](#screenshots)
 - [Quick Start](#quick-start)
-- [PowerShell Agent](#powershell-agent-invoke-rosemary)
+- [PowerShell Agent](#4-powershell-agent-invoke-rosemary)
 - [CLI Reference](#cli-reference)
 - [API](#api)
 - [Build](#build)
@@ -238,7 +238,7 @@ Once connected, the agent's subnets are automatically routed through it.
 rosemary> connect agent-ip:9001
 ```
 
-### PowerShell Agent (Invoke-Rosemary)
+### 4. PowerShell Agent (Invoke-Rosemary)
 
 `Invoke-Rosemary.ps1` is a pure PowerShell agent with no dependencies.
 
