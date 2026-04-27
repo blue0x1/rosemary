@@ -9,7 +9,7 @@
 [![Stars](https://img.shields.io/github/stars/blue0x1/rosemary)](https://github.com/blue0x1/rosemary/stargazers)
 
 <br>
-<img width="3124" height="900" alt="logo-dark" src="assets/images/logo-dark.png" />
+<img width="3124" height="900" alt="logo-dark" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/logo-dark.png" />
 
 
 
@@ -90,7 +90,7 @@ Connect multiple agents at once and traffic is automatically routed to whichever
 
 *Interactive network graph showing connected agents and their relationships*
 
-<img width="1301" height="601" alt="image" src="assets/images/image-01.png" />
+<img width="1301" height="601" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/image-01.png" />
 
 
 
@@ -98,7 +98,7 @@ Connect multiple agents at once and traffic is automatically routed to whichever
 
 *Detailed agent information including OS, hostname, subnets, and connection status*
 
-<img width="1291" height="669" alt="image" src="assets/images/image-02.png" />
+<img width="1291" height="669" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/image-02.png" />
 
 
 
@@ -106,7 +106,7 @@ Connect multiple agents at once and traffic is automatically routed to whichever
 
 *Browser extension for easy access and traffic routing through the tunnel*
 
-<img width="421" height="390" alt="image" src="assets/images/image-03.png" />
+<img width="421" height="390" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/image-03.png" />
 
 
 
@@ -123,8 +123,8 @@ The extension icon will appear in your browser toolbar.
 
 *Create and manage TCP/UDP port forwards through any agent*
 
-<img width="553" height="203" alt="image" src="assets/images/image-04.png" />
-<img width="485" height="519" alt="image" src="assets/images/image-05.png" />
+<img width="553" height="203" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/image-04.png" />
+<img width="485" height="519" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/image-05.png" />
 
 
 
@@ -133,7 +133,7 @@ The extension icon will appear in your browser toolbar.
 
 *View and toggle subnet routes with real-time status*
 
-<img width="555" height="743" alt="image" src="assets/images/image-06.png" />
+<img width="555" height="743" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/image-06.png" />
 
 
 
@@ -141,30 +141,30 @@ The extension icon will appear in your browser toolbar.
 
 *Built-in REPL for full server control*
 
-<img width="1212" height="937" alt="image" src="assets/images/image-07.png" />
+<img width="1212" height="937" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/image-07.png" />
 
 
 ### Web CLI Panel
-<img width="917" height="754" alt="image" src="assets/images/image-08.png" />
+<img width="917" height="754" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/image-08.png" />
 
 ### Logs Panel
 *Real-time event streaming with filtering and export options*
 
-<img width="560" height="923" alt="image" src="assets/images/image-09.png" />
+<img width="560" height="923" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/image-09.png" />
 
 
 ### SOCKS5 Proxy Management
 
 *Start/stop SOCKS5 proxies through any agent with optional authentication*
 
-<img width="812" height="191" alt="image" src="assets/images/image-10.png" />
+<img width="812" height="191" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/image-10.png" />
 
 
 
 ### Settings Modal
 
 *Configure server ports, encryption keys, and API tokens*
-<img width="844" height="744" alt="image" src="assets/images/image-11.png" />
+<img width="844" height="744" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/image-11.png" />
 
 
 
@@ -174,14 +174,14 @@ The extension icon will appear in your browser toolbar.
 
 *Create and manage REST API tokens with granular permissions*
 
-<img width="844" height="744" alt="image" src="assets/images/image-12.png" />
+<img width="844" height="744" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/image-12.png" />
 
 
 ### Agent Context Menu
 
 *Quick actions: tag, forward, ping, port scan, reconnect, disconnect*
 
-<img width="489" height="625" alt="image" src="assets/images/image-13.png" />
+<img width="489" height="625" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/assets-branch/assets/images/image-13.png" />
 
 
 
