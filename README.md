@@ -9,7 +9,8 @@
 [![Stars](https://img.shields.io/github/stars/blue0x1/rosemary)](https://github.com/blue0x1/rosemary/stargazers)
 
 <br>
-<img width="2124" height="900" alt="logo-dark" src="https://github.com/user-attachments/assets/f1a27759-1df3-4d37-b999-235dde6cfae6" />
+<img width="3124" height="900" alt="logo-dark" src="assets/images/logo-dark.png" />
+
 
 
 ---
@@ -89,21 +90,24 @@ Connect multiple agents at once and traffic is automatically routed to whichever
 
 *Interactive network graph showing connected agents and their relationships*
 
-<img width="1301" height="601" alt="image" src="https://github.com/user-attachments/assets/0b9e2851-77b9-450c-ac16-5710653d2b79" />
+<img width="1301" height="601" alt="image" src="assets/images/image-01.png" />
+
 
 
 ### Dashboard | Table View
 
 *Detailed agent information including OS, hostname, subnets, and connection status*
 
- <img width="1291" height="669" alt="image" src="https://github.com/user-attachments/assets/b1664e26-bf14-4af0-85fa-09c2612f3d3c" />
+<img width="1291" height="669" alt="image" src="assets/images/image-02.png" />
+
 
 
 ### Chrome Extension
 
 *Browser extension for easy access and traffic routing through the tunnel*
 
-<img width="427" height="578" alt="image" src="https://github.com/user-attachments/assets/43c1c943-82fd-4db2-9117-537b8e275a63" />
+<img width="421" height="390" alt="image" src="assets/images/image-03.png" />
+
 
 
 **Installation:**
@@ -119,8 +123,9 @@ The extension icon will appear in your browser toolbar.
 
 *Create and manage TCP/UDP port forwards through any agent*
 
-<img width="499" height="541" alt="image" src="https://github.com/user-attachments/assets/9647580c-4e6d-4343-9255-ee375358291e" />
-<img width="553" height="763" alt="image" src="https://github.com/user-attachments/assets/9c058119-c872-4847-b983-76247ee838f3" />
+<img width="553" height="203" alt="image" src="assets/images/image-04.png" />
+<img width="485" height="519" alt="image" src="assets/images/image-05.png" />
+
 
 
 
@@ -128,7 +133,7 @@ The extension icon will appear in your browser toolbar.
 
 *View and toggle subnet routes with real-time status*
 
-<img width="555" height="743" alt="image" src="https://github.com/user-attachments/assets/ccb84b0a-f926-4aa2-8474-9d9b109cd1c8" />
+<img width="555" height="743" alt="image" src="assets/images/image-06.png" />
 
 
 
@@ -136,30 +141,30 @@ The extension icon will appear in your browser toolbar.
 
 *Built-in REPL for full server control*
 
-<img width="1334" height="653" alt="image" src="https://github.com/user-attachments/assets/34fe5cf6-cc81-40dc-85aa-aff78a451ca1" />
+<img width="1212" height="937" alt="image" src="assets/images/image-07.png" />
 
 
 ### Web CLI Panel
-<img width="917" height="754" alt="image" src="https://github.com/user-attachments/assets/5c6d86b3-4425-4fc5-b5e0-613dc94c664e" />
+<img width="917" height="754" alt="image" src="assets/images/image-08.png" />
 
 ### Logs Panel
 *Real-time event streaming with filtering and export options*
 
-<img width="550" height="930" alt="image" src="https://github.com/user-attachments/assets/c7fe6d79-e16c-4a96-8e01-cc9583b0fec0" />
+<img width="560" height="923" alt="image" src="assets/images/image-09.png" />
 
 
 ### SOCKS5 Proxy Management
 
 *Start/stop SOCKS5 proxies through any agent with optional authentication*
 
-<img width="917" height="246" alt="image" src="https://github.com/user-attachments/assets/c02e290b-db75-49ce-af0c-2aa951de4d8b" />
+<img width="812" height="191" alt="image" src="assets/images/image-10.png" />
 
 
 
 ### Settings Modal
 
 *Configure server ports, encryption keys, and API tokens*
-<img width="844" height="744" alt="image" src="https://github.com/user-attachments/assets/af89afda-0074-475f-8fee-155d9c15aa3e" />
+<img width="844" height="744" alt="image" src="assets/images/image-11.png" />
 
 
 
@@ -169,14 +174,14 @@ The extension icon will appear in your browser toolbar.
 
 *Create and manage REST API tokens with granular permissions*
 
-<img width="844" height="744" alt="image" src="https://github.com/user-attachments/assets/621d3af3-ba79-4558-b665-0d016614e1c4" />
+<img width="844" height="744" alt="image" src="assets/images/image-12.png" />
 
 
 ### Agent Context Menu
 
 *Quick actions: tag, forward, ping, port scan, reconnect, disconnect*
 
-<img width="489" height="625" alt="image" src="https://github.com/user-attachments/assets/9852e051-64d7-462a-81bc-686225c69f60" />
+<img width="489" height="625" alt="image" src="assets/images/image-13.png" />
 
 
 
