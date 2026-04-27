@@ -39,7 +39,6 @@ import (
 	"github.com/xtaci/smux"
 )
 
- 
 var agentBufPool = sync.Pool{New: func() interface{} { b := make([]byte, 256*1024); return &b }}
 
 func agentYamuxConfig() *smux.Config {
@@ -80,7 +79,6 @@ func decompressData(b []byte) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
- 
 func agentSend(yamuxClient *smux.Session, ws *websocket.Conn, writeMu *sync.Mutex, encrypted []byte) error {
 	if yamuxClient != nil {
 		stream, err := yamuxClient.OpenStream()
@@ -99,7 +97,6 @@ func agentSend(yamuxClient *smux.Session, ws *websocket.Conn, writeMu *sync.Mute
 	return ws.WriteMessage(websocket.TextMessage, encrypted)
 }
 
- 
 func agentSendRaw(yamuxClient *smux.Session, conn net.Conn, writeMu *sync.Mutex, encrypted []byte) error {
 	if yamuxClient != nil {
 		stream, err := yamuxClient.OpenStream()
@@ -122,7 +119,6 @@ func agentSendRaw(yamuxClient *smux.Session, conn net.Conn, writeMu *sync.Mutex,
 	return err
 }
 
- 
 func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan struct{}) {
 	key, err := decodeKey(keyBase64)
 	if err != nil {
@@ -140,7 +136,6 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 		}
 	}
 
-	 
 	backoff := 2 * time.Second
 	resetBackoff := func() { backoff = 2 * time.Second }
 	nextBackoff := func() time.Duration {
@@ -152,7 +147,7 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 		return d
 	}
 
-	var persistedID string // survives reconnects — sent as PrevID so server can reclaim same ID
+	var persistedID string
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
@@ -203,7 +198,6 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 		}
 		c.SetReadLimit(1 << 20)
 
-		 
 		{
 			c.SetReadDeadline(time.Now().Add(10 * time.Second))
 			_, rawChallenge, err := c.ReadMessage()
@@ -234,7 +228,6 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 				}
 				continue
 			}
-			 
 			respMsg := Message{Type: "auth_response", Payload: challengeMsg.Payload}
 			respJSON, _ := json.Marshal(respMsg)
 			enc, err := encrypt(respJSON, getEncryptionKey())
@@ -258,7 +251,6 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 				continue
 			}
 		}
-		 
 		resetBackoff()
 
 		yamuxClient, yamuxErr := smux.Client(newWSNetConn(c), agentYamuxConfig())
@@ -763,10 +755,6 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 						}
 						return
 					}
-					// Process inline (no goroutine) to preserve stream ordering.
-					// Streams are accepted FIFO; dispatching each in its own goroutine
-					// would allow a later close message to race past an earlier data message.
-					// Cases that do blocking work (e.g. ping-sweep) spawn their own goroutines.
 					func(s *smux.Stream) {
 						defer s.Close()
 						lenBuf := make([]byte, 4)
@@ -811,7 +799,6 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 			}
 		}()
 
-		// WS-level ping/pong keepalive for the non-yamux path to prevent NAT expiry
 		if yamuxClient == nil {
 			pongWait := 30 * time.Second
 			c.SetReadDeadline(time.Now().Add(pongWait))
@@ -862,8 +849,6 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 		ticker.Stop()
 		c.Close()
 
-		// Close all agent-side listeners so they don't survive with stale sendEnc
-		// closures that reference the now-dead WebSocket session.
 		agentSideListenersLock.Lock()
 		for id, cancel := range agentSideListenerCancels {
 			cancel()
@@ -890,7 +875,6 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 		}
 	}
 }
-
 
 func runAgentBind(bindAddr, keyBase64 string, agentStop <-chan struct{}) {
 	key, err := decodeKey(keyBase64)
@@ -1429,7 +1413,6 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 					}
 					return
 				}
-				// Process inline to preserve stream ordering (same reasoning as agent()).
 				func(s *smux.Stream) {
 					defer s.Close()
 					lenBuf := make([]byte, 4)
@@ -1495,7 +1478,6 @@ heartbeatBindLoop:
 	ticker.Stop()
 }
 
- 
 func decodeKey(keyBase64 string) ([]byte, error) {
 	key, err := base64.URLEncoding.DecodeString(keyBase64)
 	if err != nil || len(key) != 32 {

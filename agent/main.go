@@ -49,17 +49,13 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
-// ── Verbose logging ───────────────────────────────────────────────────────────
-
-var verboseMode int32  
+var verboseMode int32
 
 func logVerbose(format string, args ...interface{}) {
 	if atomic.LoadInt32(&verboseMode) != 0 {
 		log.Printf(format, args...)
 	}
 }
-
-// ── Shared message types ──────────────────────────────────────────────────────
 
 type Message struct {
 	Type            string          `json:"type"`
@@ -141,7 +137,6 @@ type ICMPProxyResponse struct {
 	Error   string  `json:"error,omitempty"`
 }
 
- 
 type AgentFwdOpen struct {
 	ConnID     string `json:"conn_id"`
 	TargetHost string `json:"target_host"`
@@ -154,12 +149,9 @@ type AgentFwdAck struct {
 	Error   string `json:"error,omitempty"`
 }
 
-var agentFwdConns  sync.Map // stores *agentFwdConn
+var agentFwdConns  sync.Map
 var agentFwdAckMap sync.Map
 
-// agentFwdConn serializes writes to clientConn so that a concurrent close
-// message cannot race past an in-flight data message (yamux delivers each
-// message on a separate goroutine, so ordering is not guaranteed at dispatch).
 type agentFwdConn struct {
 	conn      net.Conn
 	writeCh   chan []byte
@@ -252,9 +244,7 @@ type DNSResponseMessage struct {
 	RCode     int         `json:"rcode"`
 }
 
-// ── Encryption ────────────────────────────────────────────────────────────────
-
-var encryptionKeyAtomic atomic.Value  
+var encryptionKeyAtomic atomic.Value
 
 func getEncryptionKey() []byte {
 	if v := encryptionKeyAtomic.Load(); v != nil {
@@ -269,7 +259,7 @@ func setEncryptionKey(key []byte) {
 	encryptionKeyAtomic.Store(cp)
 }
 
-var encryptionKey []byte  
+var encryptionKey []byte
 
 func encrypt(plaintext []byte, key []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
@@ -311,8 +301,6 @@ func generateRandomKey(length int) (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
-// ── Config ────────────────────────────────────────────────────────────────────
-
 type ConfigFile struct {
 	Key        string `json:"key"`
 	ServerAddr string `json:"server_addr"`
@@ -352,8 +340,6 @@ func loadConfigFile(path string) error {
 	return nil
 }
 
-// ── Agent-side globals ────────────────────────────────────────────────────────
-
 var respChanMap sync.Map
 
 var (
@@ -364,8 +350,6 @@ var (
 	agentSideUDPListeners     = make(map[string]*net.UDPConn)
 	agentSideUDPListenersLock = sync.Mutex{}
 )
-
-// ── Subnet discovery ──────────────────────────────────────────────────────────
 
 func probeInternet() bool {
 	conn, err := net.DialTimeout("tcp", "8.8.8.8:53", 3*time.Second)
@@ -479,8 +463,6 @@ func getSubnets() ([]string, error) {
 	return subnets, nil
 }
 
-// ── Ping validation ───────────────────────────────────────────────────────────
-
 var validPingTarget = regexp.MustCompile(
 	`^([a-zA-Z0-9\-\.]+|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|[a-fA-F0-9:]+)$`,
 )
@@ -494,8 +476,6 @@ func validatePingTarget(target string) error {
 	}
 	return nil
 }
-
-// ── ICMP ping ─────────────────────────────────────────────────────────────────
 
 func pingIPv4(ip net.IP, req ICMPRequest, send func(ICMPResponse)) {
 	conn, err := icmp.ListenPacket("ip4:icmp", "")
@@ -708,8 +688,6 @@ func pingOnce(ipStr string, timeout time.Duration) (bool, float64) {
 	}
 }
 
-// ── Ping sweep ────────────────────────────────────────────────────────────────
-
 func doPingSweep(req PingSweepRequest) []PingSweepResult {
 	var results []PingSweepResult
 	_, ipnet, err := net.ParseCIDR(req.Subnet)
@@ -835,14 +813,8 @@ func tcpPing(ipStr string, timeout time.Duration) (bool, time.Duration) {
 	return false, 0
 }
 
-// ── DNS handler ───────────────────────────────────────────────────────────────
-
-// publicDNSServers is a list of well-known public resolvers used as fallback
-// when the system resolver cannot resolve internet-facing domains.
 var publicDNSServers = []string{"8.8.8.8:53", "1.1.1.1:53", "8.8.4.4:53"}
 
-// queryPublicDNS sends a DNS query directly to public resolvers (UDP first,
-// then TCP) without going through the agent's system resolver.
 func queryPublicDNS(domain string, qtype uint16) []DNSAnswer {
 	msg := new(dns.Msg)
 	msg.SetQuestion(domain, qtype)
@@ -914,8 +886,6 @@ func handleAgentDNSRequest(agentID string, msg DNSRequestMessage, writeMu *sync.
 		}
 	}
 
-	// If the system resolver returned nothing, try public DNS directly.
-	// This helps when the agent's resolver only covers private/VPN domains.
 	if len(answers) == 0 {
 		logVerbose("Agent: system resolver failed for %s, trying public DNS", domain)
 		if pub := queryPublicDNS(msg.Domain, msg.QType); len(pub) > 0 {
@@ -942,9 +912,6 @@ func handleAgentDNSRequest(agentID string, msg DNSRequestMessage, writeMu *sync.
 	agentSend(yamuxClient, wsConn, writeMu, encrypted)
 }
 
-// ── Port-forward connection handler ───────────────────────────────────────────
-
- 
 func agentFwdGenID() string {
 	b := make([]byte, 12)
 	rand.Read(b)
@@ -952,8 +919,6 @@ func agentFwdGenID() string {
 }
 
 func handleAgentClientConnection(clientConn net.Conn, destinationHost string, destinationPort int, agentAssignedID string, sendEnc func([]byte) error) {
-	// Close clientConn on early return (before afc takes ownership).
-	// Once afc is created it drains the write channel and closes the conn itself.
 	afcOwned := false
 	defer func() {
 		if !afcOwned {
@@ -1039,7 +1004,6 @@ func handleAgentClientConnection(clientConn net.Conn, destinationHost string, de
 	sendFwdData(nil, true) //nolint:errcheck
 }
 
- 
 func handleAgentUDPListener(pc *net.UDPConn, destHost string, destPort int, agentID string, ctx context.Context) {
 	defer pc.Close()
 
@@ -1061,7 +1025,6 @@ func handleAgentUDPListener(pc *net.UDPConn, destHost string, destPort int, agen
 		return
 	}
 
-	 
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -1115,7 +1078,6 @@ func handleAgentUDPListener(pc *net.UDPConn, destHost string, destPort int, agen
 			sessions[key] = sess
 			logVerbose("Agent %s: UDP fwd new session %s -> %s", agentID, key, destAddrStr)
 
-			 
 			go func(outConn *net.UDPConn, clientAddr *net.UDPAddr) {
 				rbuf := make([]byte, bufSize)
 				for {
@@ -1139,8 +1101,6 @@ func handleAgentUDPListener(pc *net.UDPConn, destHost string, destPort int, agen
 		sess.conn.Write(data)
 	}
 }
-
-// ── Port scan ─────────────────────────────────────────────────────────────────
 
 func doLocalPortScan(req PortScanRequest) []PortScanResult {
 	var results []PortScanResult
@@ -1258,18 +1218,12 @@ func doLocalPortScan(req PortScanRequest) []PortScanResult {
 	return results
 }
 
-
-// ── Signal / cleanup ──────────────────────────────────────────────────────────
-
 func notifyShutdownSignals(c chan<- os.Signal) {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 }
 
 func cleanupAll() {
-	// Agent does not manage routes or iptables; nothing to clean up.
 }
-
-// ── Entry point ───────────────────────────────────────────────────────────────
 
 func main() {
 	modeFlag   := flag.String("m", "agent", "Mode: agent | agent-bind")

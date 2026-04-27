@@ -53,7 +53,6 @@ import (
 
 var serverAccessKey string
 
-// ===== LEVELED LOGGER =====
 const (
 	logLevelError int32 = iota
 	logLevelWarn
@@ -61,7 +60,6 @@ const (
 	logLevelDebug
 )
 
-//nolint:gochecknoglobals
 var (
 	colorReset      = "\033[0m"
 	colorBold       = "\033[1m"
@@ -379,8 +377,6 @@ type PingRecord struct {
 	Error   string    `json:"error,omitempty"`
 }
 
-
-// ===== SETTINGS GLOBALS =====
 var (
 	settingsMu      sync.Mutex
 	httpServerMu    sync.Mutex
@@ -410,7 +406,7 @@ type ConfigFile struct {
 	UDPPort            int    `json:"udp_port"`
 	DNSPort            int    `json:"dns_port"`
 	Key                string `json:"key"`
-	SessionIdleMinutes int    `json:"session_idle_minutes,omitempty"` // 0 = disabled
+	SessionIdleMinutes int    `json:"session_idle_minutes,omitempty"`
 	WSPath             string `json:"ws_path,omitempty"`
 }
 
@@ -485,19 +481,9 @@ func saveConfigFile(path string) error {
 	return os.WriteFile(path, data, 0600)
 }
 
-// recentForwardsByAgent stores port forward configs saved on agent disconnect
-// so they can be restored automatically when the same agent reconnects.
-var recentForwardsByAgent sync.Map // agentID -> []*PortForward
-
-// pendingSubnetCleanups holds the grace-period timers scheduled to remove
-// iptables/route rules after an agent disconnects.  Cancelled if the same
-// agent reconnects before the timer fires.
-var pendingSubnetCleanups sync.Map // agentID -> *time.Timer
-
-// activeSubnetRules tracks subnets whose iptables rules are currently
-// installed.  Used to avoid duplicate rules when an agent reconnects within
-// the grace period before the removal timer has fired.
-var activeSubnetRules sync.Map // subnet -> struct{}
+var recentForwardsByAgent sync.Map
+var pendingSubnetCleanups sync.Map
+var activeSubnetRules sync.Map
 
 func restoreAgentForwards(agentID string) {
 	val, ok := recentForwardsByAgent.LoadAndDelete(agentID)
@@ -505,7 +491,6 @@ func restoreAgentForwards(agentID string) {
 		return
 	}
 	forwards := val.([]*PortForward)
-	// Brief delay to ensure agent has processed register_ok and is ready
 	time.Sleep(200 * time.Millisecond)
 
 	connLock.Lock()
@@ -592,11 +577,9 @@ var (
 	nextDNSRequestID   uint32
 	dnsProxyStarted    bool
 
-	// System DNS servers captured before any redirect is installed; used for DNS fallback.
 	savedSystemDNSServers   []string
 	savedSystemDNSServersMu sync.RWMutex
 
-	// Default egress agent: receives traffic when no specific subnet route is found.
 	defaultEgressAgentID string
 	defaultEgressMu      sync.RWMutex
 
@@ -977,7 +960,6 @@ func (p *pendingConn) send(data []byte) {
 	select {
 	case p.writeCh <- dataCopy:
 	default:
-		// Channel full — send async rather than dropping.
 		go func() {
 			defer func() { recover() }()
 			select {
@@ -1125,20 +1107,14 @@ func restartDNSProxy() {
 	log.Printf(colorBoldGreen+"[+]"+colorReset+" "+colorDim+"[Settings]"+colorReset+" DNS proxy restarted on port "+colorCyan+"%d"+colorReset, currentDNSPort)
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// REST API — Token auth + all v1 endpoints
-// ═══════════════════════════════════════════════════════════════════════════
-
-// ── Types & storage ────────────────────────────────────────────────────────
-
 type APIToken struct {
 	ID          string     `json:"id"`
 	Token       string     `json:"token,omitempty"`
 	Name        string     `json:"name"`
 	CreatedAt   time.Time  `json:"created_at"`
 	LastUsedAt  time.Time  `json:"last_used_at,omitempty"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"` // nil = never expires
-	Permissions []string   `json:"permissions"`          // "read", "write", "admin"
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	Permissions []string   `json:"permissions"`
 }
 
 var (
@@ -1153,8 +1129,6 @@ func generateAPIToken() (string, error) {
 	}
 	return "tun_" + base64.URLEncoding.EncodeToString(b), nil
 }
-
-// ── Middleware ─────────────────────────────────────────────────────────────
 
 func apiTokenMiddleware(perms ...string) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
@@ -1212,8 +1186,6 @@ func apiTokenMiddleware(perms ...string) func(http.HandlerFunc) http.HandlerFunc
 	}
 }
 
-// ── Token management ───────────────────────────────────────────────────────
-
 func handleAPITokensList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
@@ -1239,7 +1211,7 @@ func handleAPITokenCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name        string   `json:"name"`
 		Permissions []string `json:"permissions"`
-		TTLHours    int      `json:"ttl_hours"` // 0 = never expires
+		TTLHours    int      `json:"ttl_hours"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
@@ -1349,8 +1321,6 @@ func handleAPITokenView(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"token": found.Token})
 }
 
-// ── POST /api/v1/auth ─────────────────────────────────────────────────────
-
 func handleAPIKeyAuth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Content-Type", "application/json")
@@ -1401,8 +1371,6 @@ func handleAPIKeyAuth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ── Helper shared by agent control handlers ────────────────────────────────
-
 func resolveAgentIDAndAction(r *http.Request, prefix string) (string, string) {
 	rest := strings.TrimPrefix(r.URL.Path, prefix)
 	parts := strings.SplitN(rest, "/", 2)
@@ -1426,8 +1394,6 @@ func apiAgentMustExist(w http.ResponseWriter, agentID string) bool {
 	return true
 }
 
-// ── GET /api/v1/status ─────────────────────────────────────────────────────
-
 func handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	connLock.Lock()
 	agentCount := len(connections)
@@ -1449,8 +1415,6 @@ func handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ── GET /api/v1/agents ────────────────────────────────────────────────────
-
 func handleAPIAgents(w http.ResponseWriter, r *http.Request) {
 	connLock.Lock()
 	list := make([]AgentInfo, 0, len(connections))
@@ -1470,8 +1434,6 @@ func handleAPIAgents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(list)
 }
-
-// ── /api/v1/routes ────────────────────────────────────────────────────────
 
 type RouteEntry struct {
 	Subnet   string `json:"subnet"`
@@ -1532,8 +1494,6 @@ func handleAPIRoutes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
 	}
 }
-
-// ── /api/v1/forwards ──────────────────────────────────────────────────────
 
 func handleAPIForwardsList(w http.ResponseWriter, r *http.Request) {
 	connLock.Lock()
@@ -1633,7 +1593,6 @@ func handleAPIForwardsCreate(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(pf)
 }
 
-// DELETE
 func handleAPIForwardsDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if id == "" {
@@ -1676,8 +1635,6 @@ func handleAPIForwards(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
 	}
 }
-
-// ── /api/v1/rforwards ────────────────────────────────────────────────────
 
 func handleAPIRForwardsPOST(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -1758,8 +1715,6 @@ func handleAPIRForwards(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ── /api/v1/socks ─────────────────────────────────────────────────────────
-
 func handleAPISocks(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -1826,8 +1781,6 @@ func handleAPISocks(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ── POST /api/v1/cli ──────────────────────────────────────────────────────
-
 func handleAPICLI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
@@ -1852,8 +1805,6 @@ func handleAPICLI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"output": output})
 }
-
-// ── /api/v1/settings ──────────────────────────────────────────────────────
 
 func applyAPIKeyChangeHelper(req ServerSettings, response map[string]interface{}, w http.ResponseWriter, remoteAddr string) bool {
 	if req.Action == "regenerate" {
@@ -1961,8 +1912,6 @@ func handleAPISettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
 	}
 }
-
-// ── Agent control endpoints ────────────────────────────────────────────────
 
 func handleAPIAgentGet(w http.ResponseWriter, agentID string) {
 	connLock.Lock()
@@ -2075,7 +2024,6 @@ func handleAPIAgentPing(w http.ResponseWriter, r *http.Request, agentID string) 
 	}
 	payload, _ := json.Marshal(ICMPRequest{Target: req.Target, Count: req.Count, TimeoutMs: 1000})
 
-	// Register before sending so we don't miss fast responses.
 	listenerID, resultCh := registerCLIListener(req.Count + 4)
 	defer unregisterCLIListener(listenerID)
 
@@ -2263,7 +2211,6 @@ scanWait:
 	return lines
 }
 
-// handleAPIAgentControl
 func handleAPIAgentControl(w http.ResponseWriter, r *http.Request) {
 	agentID, action := resolveAgentIDAndAction(r, "/api/v1/agents/")
 	if agentID == "" {
@@ -2652,9 +2599,6 @@ func (rt *RoutingTable) FindAgentForIP(ip net.IP) (string, bool) {
 	return "", false
 }
 
-// captureSystemDNSServers reads /etc/resolv.conf BEFORE the DNS redirect is
-// installed and saves the real upstream nameservers so the DNS proxy can fall
-// back to them when connected agents cannot resolve a query.
 func captureScutilDNS() []string {
 	var result []string
 	out, err := exec.Command("scutil", "--dns").CombinedOutput()
@@ -2745,7 +2689,7 @@ func autoAssignDefaultEgress(newAgentID string, hasInternet bool) {
 		_, ok := connections[current]
 		connLock.Unlock()
 		if ok {
-			return // current egress agent still connected, keep it
+			return
 		}
 	}
 	setDefaultEgressAgent(newAgentID)
@@ -2919,7 +2863,6 @@ func getDefaultGateway() (string, error) {
 	if runtime.GOOS == "freebsd" || runtime.GOOS == "openbsd" {
 		return getDefaultGatewayBSD()
 	}
-	// macOS
 	out, err := exec.Command("route", "-n", "get", "default").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("route -n get default: %v - %s", err, out)
@@ -3293,7 +3236,6 @@ func cleanupAll() {
 	addedIcmpIptables = nil
 	cleanupMu.Unlock()
 
-	// Remove egress catch-all and local-subnet RETURN rules if egress was active.
 	if getDefaultEgressAgent() != "" {
 		setDefaultEgressAgent("")
 		if err := reloadDefaultEgressRules(); err != nil {
@@ -3304,7 +3246,6 @@ func cleanupAll() {
 	stopDNSProxy()
 	stopProxies()
 }
-
 
 func handleConnectBind(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -3333,8 +3274,6 @@ func handleConnectBind(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	fmt.Fprintf(w, "Connecting to bind agent at %s...\n", addr)
 }
-
-// ── /api/v1/connect-bind ──────────────────────────────────────────────────
 
 type BindConnectEntry struct {
 	Addr   string `json:"addr"`
@@ -4571,8 +4510,6 @@ func handleStopPortForward(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Port forward stopped successfully"))
 }
 
-// ── Subnet toggle ──────────────────────────────────────────────────────────
-
 func handleToggleSubnet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -4633,8 +4570,6 @@ func handleSubnetStatus(w http.ResponseWriter, r *http.Request) {
 		"owners":   ownersCopy,
 	})
 }
-
-// ── Reverse port forward ───────────────────────────────────────────────────
 
 var (
 	reverseForwards     = make(map[string]*ReverseForward)
@@ -4726,8 +4661,6 @@ func startReverseForward(agentID string, listenPort int, targetHost string, targ
 
 	return listenerID, nil
 }
-
-// handleReverseForwardConnDirect dials the target directly from the server (no agent).
 
 func handleReverseForwardConnDirect(clientConn net.Conn, targetHost string, targetPort int) {
 	defer clientConn.Close()
@@ -5217,7 +5150,6 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// csrfGenerationMiddleware
 func csrfGenerationMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sessionCookie, err := r.Cookie(authCookieName)
