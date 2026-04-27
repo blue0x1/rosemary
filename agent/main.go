@@ -26,7 +26,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -43,7 +42,7 @@ import (
 	"time"
 
 "github.com/gorilla/websocket"
-	"github.com/hashicorp/yamux"
+	"github.com/xtaci/smux"
 	"github.com/miekg/dns"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
@@ -75,6 +74,7 @@ type RegisterMessage struct {
 	Hostname    string   `json:"hostname"`
 	Username    string   `json:"username"`
 	HasInternet bool     `json:"has_internet"`
+	PrevID      string   `json:"prev_id,omitempty"`
 }
 
 type ForwardMessage struct {
@@ -154,8 +154,49 @@ type AgentFwdAck struct {
 	Error   string `json:"error,omitempty"`
 }
 
-var agentFwdConns  sync.Map  
-var agentFwdAckMap sync.Map  
+var agentFwdConns  sync.Map // stores *agentFwdConn
+var agentFwdAckMap sync.Map
+
+// agentFwdConn serializes writes to clientConn so that a concurrent close
+// message cannot race past an in-flight data message (yamux delivers each
+// message on a separate goroutine, so ordering is not guaranteed at dispatch).
+type agentFwdConn struct {
+	conn      net.Conn
+	writeCh   chan []byte
+	closeOnce sync.Once
+}
+
+func newAgentFwdConn(conn net.Conn) *agentFwdConn {
+	afc := &agentFwdConn{
+		conn:    conn,
+		writeCh: make(chan []byte, 1024),
+	}
+	go func() {
+		for data := range afc.writeCh {
+			conn.Write(data) //nolint:errcheck
+		}
+		conn.Close()
+	}()
+	return afc
+}
+
+func (a *agentFwdConn) send(data []byte) {
+	defer func() { recover() }()
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	select {
+	case a.writeCh <- cp:
+	default:
+		go func() {
+			defer func() { recover() }()
+			a.writeCh <- cp
+		}()
+	}
+}
+
+func (a *agentFwdConn) close() {
+	a.closeOnce.Do(func() { close(a.writeCh) })
+}
 
 type PortScanRequest struct {
 	Target string `json:"target"`
@@ -844,7 +885,7 @@ func queryPublicDNS(domain string, qtype uint16) []DNSAnswer {
 	return nil
 }
 
-func handleAgentDNSRequest(agentID string, msg DNSRequestMessage, writeMu *sync.Mutex, wsConn *websocket.Conn, yamuxClient *yamux.Session) {
+func handleAgentDNSRequest(agentID string, msg DNSRequestMessage, writeMu *sync.Mutex, wsConn *websocket.Conn, yamuxClient *smux.Session) {
 	var answers []DNSAnswer
 	domain := strings.TrimSuffix(msg.Domain, ".")
 	switch msg.QType {
@@ -910,37 +951,92 @@ func agentFwdGenID() string {
 	return fmt.Sprintf("%x", b)
 }
 
- 
-func handleAgentClientConnection(clientConn net.Conn, destinationHost string, destinationPort int, agentAssignedID string, _ func([]byte) error) {
-	defer clientConn.Close()
+func handleAgentClientConnection(clientConn net.Conn, destinationHost string, destinationPort int, agentAssignedID string, sendEnc func([]byte) error) {
+	// Close clientConn on early return (before afc takes ownership).
+	// Once afc is created it drains the write channel and closes the conn itself.
+	afcOwned := false
+	defer func() {
+		if !afcOwned {
+			clientConn.Close()
+		}
+	}()
 
-	destAddr := net.JoinHostPort(destinationHost, strconv.Itoa(destinationPort))
-	destConn, err := net.DialTimeout("tcp", destAddr, 10*time.Second)
+	connID := agentFwdGenID()
+	ackCh := make(chan AgentFwdAck, 1)
+	agentFwdAckMap.Store(connID, ackCh)
+	defer agentFwdAckMap.Delete(connID)
+
+	openMsg := AgentFwdOpen{ConnID: connID, TargetHost: destinationHost, TargetPort: destinationPort}
+	openPayload, _ := json.Marshal(openMsg)
+	m := Message{Type: "agent_fwd_open", Payload: openPayload, OriginalAgentID: agentAssignedID}
+	mp, _ := json.Marshal(m)
+	enc, err := encrypt(mp, getEncryptionKey())
 	if err != nil {
-		logVerbose("Agent %s: fwd failed to dial %s: %v", agentAssignedID, destAddr, err)
+		logVerbose("Agent %s: fwd encrypt error: %v", agentAssignedID, err)
 		return
 	}
-	defer destConn.Close()
+	if err := sendEnc(enc); err != nil {
+		logVerbose("Agent %s: fwd send agent_fwd_open error: %v", agentAssignedID, err)
+		return
+	}
 
-	logVerbose("Agent %s: fwd tunnel open %s", agentAssignedID, destAddr)
+	var ack AgentFwdAck
+	select {
+	case ack = <-ackCh:
+	case <-time.After(10 * time.Second):
+		logVerbose("Agent %s: fwd ack timeout (conn %s)", agentAssignedID, connID)
+		return
+	}
+	if !ack.Success {
+		logVerbose("Agent %s: fwd server dial failed: %s", agentAssignedID, ack.Error)
+		return
+	}
 
-	 
-	done := make(chan struct{}, 2)
-	go func() {
-		io.Copy(destConn, clientConn)
-		if tc, ok := destConn.(*net.TCPConn); ok {
-			tc.CloseWrite()
-		}
-		done <- struct{}{}
+	afc := newAgentFwdConn(clientConn)
+	afcOwned = true
+	agentFwdConns.Store(connID, afc)
+	defer func() {
+		agentFwdConns.Delete(connID)
+		afc.close()
 	}()
-	go func() {
-		io.Copy(clientConn, destConn)
-		if tc, ok := clientConn.(*net.TCPConn); ok {
-			tc.CloseWrite()
+
+	logVerbose("Agent %s: fwd tunnel open %s:%d (conn %s)", agentAssignedID, destinationHost, destinationPort, connID)
+
+	sendFwdData := func(data []byte, closeConn bool) error {
+		dm := DataMessage{ConnID: connID, Data: data, Close: closeConn}
+		if !closeConn && len(data) > 256 {
+			if compressed, ok := compressData(data); ok {
+				dm.Data = compressed
+				dm.Compressed = true
+			}
 		}
-		done <- struct{}{}
-	}()
-	<-done
+		p, _ := json.Marshal(dm)
+		fwdMsg := Message{Type: "agent_fwd_data", Payload: p, OriginalAgentID: agentAssignedID}
+		fmp, _ := json.Marshal(fwdMsg)
+		enc, err := encrypt(fmp, getEncryptionKey())
+		if err != nil {
+			return err
+		}
+		return sendEnc(enc)
+	}
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := clientConn.Read(buf)
+		if n > 0 {
+			chunk := make([]byte, n)
+			copy(chunk, buf[:n])
+			if sendErr := sendFwdData(chunk, false); sendErr != nil {
+				logVerbose("Agent %s: fwd data send error: %v", agentAssignedID, sendErr)
+				return
+			}
+		}
+		if readErr != nil {
+			break
+		}
+	}
+
+	sendFwdData(nil, true) //nolint:errcheck
 }
 
  

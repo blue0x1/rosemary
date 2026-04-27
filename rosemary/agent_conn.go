@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/hashicorp/yamux"
+	"github.com/xtaci/smux"
 	"golang.org/x/time/rate"
 )
 
@@ -80,34 +80,74 @@ func cleanupAgentConn(connID string) {
 			removedSet[id] = true
 		}
 	}
+	// Collect subnets before deleting — removal is deferred by grace period.
+	subnetsByAgent := make(map[string][]string)
 	for id := range removedSet {
 		if agentInfo, ok := connections[id]; ok {
-			for _, subnet := range agentInfo.Subnets {
-				if !subnetContainsServerIP(subnet) {
-					removeIptablesRule(subnet)
-					removeUdpIptablesRule(subnet)
-					removeIcmpIptablesRule(subnet)
-					removeRoute(subnet)
-				}
-			}
+			subnetsByAgent[id] = agentInfo.Subnets
 			delete(connections, id)
 			log.Printf(colorBoldRed+"[-]"+colorReset+" Agent "+colorYellow+"%s"+colorReset+" disconnected and removed.", id)
 		}
 	}
-	var subnetsToRemove []string
+	// For routes pointing to disconnecting agents, hand off to another
+	// still-connected agent that also owns the subnet, or remove entirely.
+	type subnetOp struct{ alternate string }
+	subnetOps := make(map[string]subnetOp)
 	for subnet, agentRouteID := range routingTable.routes {
-		if removedSet[agentRouteID] {
-			subnetsToRemove = append(subnetsToRemove, subnet)
+		if !removedSet[agentRouteID] {
+			continue
+		}
+		var alternate string
+		subnetOwnersMu.Lock()
+		for _, id := range subnetOwners[subnet] {
+			if !removedSet[id] {
+				if _, ok := connections[id]; ok {
+					alternate = id
+					break
+				}
+			}
+		}
+		subnetOwnersMu.Unlock()
+		subnetOps[subnet] = subnetOp{alternate: alternate}
+	}
+	for subnet, op := range subnetOps {
+		if op.alternate != "" {
+			routingTable.routes[subnet] = op.alternate
+		} else {
+			routingTable.RemoveRoute(subnet)
 		}
 	}
-	for _, subnet := range subnetsToRemove {
-		routingTable.RemoveRoute(subnet)
+	// Remove disconnecting agents from subnetOwners for subnets that were handed off.
+	subnetOwnersMu.Lock()
+	for agentID, subnets := range subnetsByAgent {
+		for _, subnet := range subnets {
+			owners := subnetOwners[subnet]
+			kept := owners[:0]
+			for _, id := range owners {
+				if id != agentID {
+					kept = append(kept, id)
+				}
+			}
+			if len(kept) == 0 {
+				delete(subnetOwners, subnet)
+			} else {
+				subnetOwners[subnet] = kept
+			}
+		}
 	}
+	subnetOwnersMu.Unlock()
+	// Save port forwards before removing — restoreAgentForwards re-sends them if the same agent reconnects
+	savedByAgent := make(map[string][]*PortForward)
 	for listenerID, pf := range portForwards {
 		if removedSet[pf.DestinationAgentID] {
+			pfCopy := *pf
+			savedByAgent[pf.DestinationAgentID] = append(savedByAgent[pf.DestinationAgentID], &pfCopy)
 			delete(portForwards, listenerID)
 			delete(portForwardLookup, fmt.Sprintf("%s:%d", pf.DestinationAgentID, pf.AgentListenPort))
 		}
+	}
+	for agentID, fwds := range savedByAgent {
+		recentForwardsByAgent.Store(agentID, fwds)
 	}
 	delete(directConnections, connID)
 	delete(wsWriteMus, connID)
@@ -116,6 +156,45 @@ func cleanupAgentConn(connID string) {
 		delete(yamuxSessions, connID)
 	}
 	connLock.Unlock()
+
+	// Defer iptables/route removal by 8 s so that existing tunneled TCP
+	// connections survive brief agent reconnects (same behaviour as Ligolo).
+	// The timer is cancelled in handleMsgRegisterWS/Bind if the agent
+	// reclaims its previous ID before the timer fires.
+	for agentID, subnets := range subnetsByAgent {
+		t := time.AfterFunc(8*time.Second, func() {
+			pendingSubnetCleanups.Delete(agentID)
+			for _, subnet := range subnets {
+				if subnetContainsServerIP(subnet) {
+					continue
+				}
+				// Skip if another connected agent still owns this subnet.
+				connLock.Lock()
+				stillOwned := false
+				for _, info := range connections {
+					for _, s := range info.Subnets {
+						if s == subnet {
+							stillOwned = true
+							break
+						}
+					}
+					if stillOwned {
+						break
+					}
+				}
+				connLock.Unlock()
+				if stillOwned {
+					continue
+				}
+				activeSubnetRules.Delete(subnet)
+				removeIptablesRule(subnet)
+				removeUdpIptablesRule(subnet)
+				removeIcmpIptablesRule(subnet)
+				removeRoute(subnet)
+			}
+		})
+		pendingSubnetCleanups.Store(agentID, t)
+	}
 
 	pendingConns.Range(func(key, value interface{}) bool {
 		pc := value.(*pendingConn)
@@ -252,15 +331,64 @@ func handleMsgRegisterWS(msg Message, sourceID string, agentIP string, connID *s
 	connLock.Lock()
 	if _, ok := connections[registeringAgentID]; !ok {
 		if registeringAgentID == *connID {
-			registeringAgentID = fmt.Sprintf("agent-%d", nextAgentID)
-			nextAgentID++
+			// Try to reclaim previous agent ID so forwards and tunnels survive reconnects
+			if registerMsg.PrevID != "" {
+				if prevInfo, occupied := connections[registerMsg.PrevID]; !occupied {
+					registeringAgentID = registerMsg.PrevID
+				} else {
+					// Occupied — force-evict if the old connection is a zombie
+					agentLastSeenMu.Lock()
+					prevLastSeen := agentLastSeen[registerMsg.PrevID]
+					agentLastSeenMu.Unlock()
+					if time.Since(prevLastSeen) > 20*time.Second {
+						prevConnID := prevInfo.DirectWSConnID
+						if oldWS, wsOk := directConnections[prevConnID]; wsOk {
+							go oldWS.Close() // triggers deferred cleanupAgentConn
+							delete(directConnections, prevConnID)
+						}
+						if oldSess, sessOk := yamuxSessions[prevConnID]; sessOk {
+							go oldSess.Close()
+							delete(yamuxSessions, prevConnID)
+						}
+						delete(wsWriteMus, prevConnID)
+						delete(connections, registerMsg.PrevID)
+						agentLastSeenMu.Lock()
+						delete(agentLastSeen, registerMsg.PrevID)
+						agentLastSeenMu.Unlock()
+						logWarn("Force-evicted zombie %s (stale %.0fs) — %s is reclaiming its ID",
+							registerMsg.PrevID, time.Since(prevLastSeen).Seconds(), sourceID)
+						registeringAgentID = registerMsg.PrevID
+					}
+				}
+			}
+			// Fall back to new sequential ID if PrevID unavailable
+			if registeringAgentID == *connID {
+				for {
+					candidate := fmt.Sprintf("agent-%d", nextAgentID)
+					nextAgentID++
+					if _, taken := connections[candidate]; !taken {
+						registeringAgentID = candidate
+						break
+					}
+				}
+			}
 			directConnections[registeringAgentID] = ws
 			delete(directConnections, sourceID)
 			if sess, ok := yamuxSessions[sourceID]; ok {
 				yamuxSessions[registeringAgentID] = sess
 				delete(yamuxSessions, sourceID)
 			}
+			if mu, ok := wsWriteMus[sourceID]; ok {
+				wsWriteMus[registeringAgentID] = mu
+				delete(wsWriteMus, sourceID)
+			}
 			*connID = registeringAgentID
+		}
+		// Cancel any pending subnet cleanup so existing tunneled connections
+		// survive the reconnect without their iptables rules being torn down.
+		if t, ok := pendingSubnetCleanups.LoadAndDelete(registeringAgentID); ok {
+			t.(*time.Timer).Stop()
+			log.Printf(colorBoldGreen+"[+]"+colorReset+" Cancelled subnet cleanup for reconnecting agent "+colorYellow+"%s"+colorReset, registeringAgentID)
 		}
 		agentInfo := AgentInfo{
 			ID:             registeringAgentID,
@@ -282,11 +410,12 @@ func handleMsgRegisterWS(msg Message, sourceID string, agentIP string, connID *s
 	triggerDashboardBroadcast()
 	registerAgentSubnets(registeringAgentID, registerMsg.Subnets, agentIP)
 	log.Printf(colorBoldGreen+"[+]"+colorReset+" Agent "+colorYellow+"%s"+colorReset+" connected with subnets: "+colorCyan+"%v"+colorReset, registeringAgentID, registerMsg.Subnets)
-	sendControlMessageToAgent(registeringAgentID, Message{
+	sendControlMessageToAgent(registeringAgentID, Message{ //nolint:errcheck
 		Type:            "register_ok",
 		Payload:         []byte(fmt.Sprintf(`{"id": "%s"}`, registeringAgentID)),
 		OriginalAgentID: registeringAgentID,
 	})
+	go restoreAgentForwards(registeringAgentID)
 }
 
 func handleMsgRegisterBind(msg Message, sourceID string, agentIP string, connID *string) {
@@ -302,13 +431,51 @@ func handleMsgRegisterBind(msg Message, sourceID string, agentIP string, connID 
 	connLock.Lock()
 	if _, ok := connections[registeringAgentID]; !ok {
 		if registeringAgentID == *connID {
-			registeringAgentID = fmt.Sprintf("agent-%d", nextAgentID)
-			nextAgentID++
+			// Try to reclaim previous agent ID so forwards survive reconnects
+			if registerMsg.PrevID != "" {
+				if prevInfo, occupied := connections[registerMsg.PrevID]; !occupied {
+					registeringAgentID = registerMsg.PrevID
+				} else {
+					agentLastSeenMu.Lock()
+					prevLastSeen := agentLastSeen[registerMsg.PrevID]
+					agentLastSeenMu.Unlock()
+					if time.Since(prevLastSeen) > 20*time.Second {
+						prevConnID := prevInfo.DirectWSConnID
+						if oldSess, sessOk := yamuxSessions[prevConnID]; sessOk {
+							go oldSess.Close()
+							delete(yamuxSessions, prevConnID)
+						}
+						delete(connections, registerMsg.PrevID)
+						agentLastSeenMu.Lock()
+						delete(agentLastSeen, registerMsg.PrevID)
+						agentLastSeenMu.Unlock()
+						logWarn("Force-evicted zombie bind %s (stale %.0fs) — reclaiming ID",
+							registerMsg.PrevID, time.Since(prevLastSeen).Seconds())
+						registeringAgentID = registerMsg.PrevID
+					}
+				}
+			}
+			if registeringAgentID == *connID {
+				for {
+					candidate := fmt.Sprintf("agent-%d", nextAgentID)
+					nextAgentID++
+					if _, taken := connections[candidate]; !taken {
+						registeringAgentID = candidate
+						break
+					}
+				}
+			}
 			if sess, ok := yamuxSessions[*connID]; ok {
 				yamuxSessions[registeringAgentID] = sess
 				delete(yamuxSessions, *connID)
 			}
 			*connID = registeringAgentID
+		}
+		// Cancel any pending subnet cleanup so existing tunneled connections
+		// survive the reconnect without their iptables rules being torn down.
+		if t, ok := pendingSubnetCleanups.LoadAndDelete(registeringAgentID); ok {
+			t.(*time.Timer).Stop()
+			log.Printf(colorBoldGreen+"[+]"+colorReset+" Cancelled subnet cleanup for reconnecting bind agent "+colorYellow+"%s"+colorReset, registeringAgentID)
 		}
 		agentInfo := AgentInfo{
 			ID:             registeringAgentID,
@@ -330,11 +497,12 @@ func handleMsgRegisterBind(msg Message, sourceID string, agentIP string, connID 
 	triggerDashboardBroadcast()
 	registerAgentSubnets(registeringAgentID, registerMsg.Subnets, agentIP)
 	log.Printf(colorBoldGreen+"[+]"+colorReset+" Bind agent "+colorYellow+"%s"+colorReset+" connected with subnets: "+colorCyan+"%v"+colorReset, registeringAgentID, registerMsg.Subnets)
-	sendControlMessageToAgent(registeringAgentID, Message{
+	sendControlMessageToAgent(registeringAgentID, Message{ //nolint:errcheck
 		Type:            "register_ok",
 		Payload:         []byte(fmt.Sprintf(`{"id": "%s"}`, registeringAgentID)),
 		OriginalAgentID: registeringAgentID,
 	})
+	go restoreAgentForwards(registeringAgentID)
 }
 
 // registerAgentSubnets sets up routing/iptables for each subnet the agent owns.
@@ -356,6 +524,12 @@ func applySubnetRules(subnet, agentIP string) {
 	}
 	if !isValidCIDR(subnet) {
 		log.Printf("Invalid subnet format '%s' received from agent. Skipping iptables rules.", subnet)
+		return
+	}
+	// If the agent reconnected within the grace period the rules are still
+	// installed — re-adding with -A would duplicate them.
+	if _, alreadyActive := activeSubnetRules.LoadOrStore(subnet, struct{}{}); alreadyActive {
+		logVerbose("Subnet %s rules still active (reconnect within grace period), skipping re-add", subnet)
 		return
 	}
 	if err := addIptablesRule(subnet, agentIP); err != nil {
@@ -579,13 +753,10 @@ func handleMsgData(msg Message) {
 	if value, ok := pendingConns.Load(dataMsg.ConnID); ok {
 		p := value.(*pendingConn)
 		if dataMsg.Close {
-			p.conn.Close()
+			p.closeConn()
 			pendingConns.Delete(dataMsg.ConnID)
 		} else {
-			if _, err := p.conn.Write(dataMsg.Data); err != nil {
-				p.conn.Close()
-				pendingConns.Delete(dataMsg.ConnID)
-			}
+			p.send(dataMsg.Data)
 		}
 	} else if value, ok := pendingUDPConns.Load(dataMsg.ConnID); ok {
 		s := value.(*udpSession)
@@ -635,29 +806,38 @@ func handleMsgAgentFwdData(msg Message) {
 	}
 }
 
-// handleConnections handles an incoming WebSocket agent connection.
-func readWSAgentMsg(ws *websocket.Conn, yamuxSession *yamux.Session, yamuxErr error) (Message, error) {
+// readWSAgentMsg reads one decrypted message from the agent connection.
+// For yamux connections, stream-level read errors are retried (the session
+// is still alive); only session-level errors propagate to the caller.
+func readWSAgentMsg(ws *websocket.Conn, yamuxSession *smux.Session, yamuxErr error) (Message, error) {
 	var msg Message
 	if yamuxErr == nil {
-		stream, err := yamuxSession.Accept()
-		if err != nil {
-			return msg, err
+		for {
+			stream, err := yamuxSession.AcceptStream()
+			if err != nil {
+				return msg, err // session-level error — caller will close connection
+			}
+			lenBuf := make([]byte, 4)
+			if _, err := io.ReadFull(stream, lenBuf); err != nil {
+				stream.Close()
+				logVerbose("Server: yamux read len error (skipping stream): %v", err)
+				continue
+			}
+			msgLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
+			data := make([]byte, msgLen)
+			if _, err := io.ReadFull(stream, data); err != nil {
+				stream.Close()
+				logVerbose("Server: yamux read data error (skipping stream): %v", err)
+				continue
+			}
+			stream.Close()
+			plaintext, err := decrypt(data, getEncryptionKey())
+			if err != nil {
+				logVerbose("Server: yamux decrypt error (skipping stream): %v", err)
+				continue
+			}
+			return msg, json.Unmarshal(plaintext, &msg)
 		}
-		defer stream.Close()
-		lenBuf := make([]byte, 4)
-		if _, err := io.ReadFull(stream, lenBuf); err != nil {
-			return msg, err
-		}
-		msgLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
-		data := make([]byte, msgLen)
-		if _, err := io.ReadFull(stream, data); err != nil {
-			return msg, err
-		}
-		plaintext, err := decrypt(data, getEncryptionKey())
-		if err != nil {
-			return msg, err
-		}
-		return msg, json.Unmarshal(plaintext, &msg)
 	}
 	_, encrypted, err := ws.ReadMessage()
 	if err != nil {
@@ -716,18 +896,28 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	wsWriteMus[directConnectedAgentID] = &sync.Mutex{}
 	connLock.Unlock()
 
-	yamuxCfg := yamux.DefaultConfig()
-	yamuxCfg.KeepAliveInterval = 60 * time.Second
-	yamuxCfg.ConnectionWriteTimeout = 120 * time.Second
-	yamuxCfg.LogOutput = io.Discard
-	yamuxSession, yamuxErr := yamux.Server(newWSNetConn(ws), yamuxCfg)
+	muxCfg := smux.DefaultConfig()
+	muxCfg.Version = 2
+	muxCfg.KeepAliveInterval = 10 * time.Second
+	muxCfg.KeepAliveTimeout = 30 * time.Second
+	muxCfg.MaxStreamBuffer = 512 * 1024
+	yamuxSession, yamuxErr := smux.Server(newWSNetConn(ws), muxCfg)
 	if yamuxErr == nil {
 		connLock.Lock()
 		yamuxSessions[directConnectedAgentID] = yamuxSession
 		connLock.Unlock()
 	}
-	go startWSPingKeepalive(ws, directConnectedAgentID)
 	defer func() { cleanupAgentConn(directConnectedAgentID) }()
+
+	// WS-level pong handler for non-yamux agents — resets read deadline on each pong
+	if yamuxErr != nil {
+		pongWait := 30 * time.Second
+		ws.SetReadDeadline(time.Now().Add(pongWait))
+		ws.SetPongHandler(func(string) error {
+			ws.SetReadDeadline(time.Now().Add(pongWait))
+			return nil
+		})
+	}
 
 	agentMsgLimiter := rate.NewLimiter(rate.Limit(1000), 2000)
 	for {
@@ -753,11 +943,12 @@ func handleBindAgentConn(conn net.Conn, state *bindConnectState) {
 		tc.SetNoDelay(true)
 	}
 
-	yamuxCfg := yamux.DefaultConfig()
-	yamuxCfg.KeepAliveInterval = 60 * time.Second
-	yamuxCfg.ConnectionWriteTimeout = 120 * time.Second
-	yamuxCfg.LogOutput = io.Discard
-	yamuxSession, err := yamux.Server(conn, yamuxCfg)
+	muxCfg := smux.DefaultConfig()
+	muxCfg.Version = 2
+	muxCfg.KeepAliveInterval = 10 * time.Second
+	muxCfg.KeepAliveTimeout = 30 * time.Second
+	muxCfg.MaxStreamBuffer = 512 * 1024
+	yamuxSession, err := smux.Server(conn, muxCfg)
 	if err != nil {
 		log.Printf("handleBindAgentConn: yamux server: %v", err)
 		return
@@ -777,73 +968,54 @@ func handleBindAgentConn(conn net.Conn, state *bindConnectState) {
 
 	defer func() { cleanupAgentConn(directConnectedAgentID) }()
 
-	readMsg := func() (Message, error) {
-		var msg Message
-		stream, err := yamuxSession.Accept()
-		if err != nil {
-			return msg, err
-		}
-		defer stream.Close()
-		lenBuf := make([]byte, 4)
-		if _, err := io.ReadFull(stream, lenBuf); err != nil {
-			return msg, err
-		}
-		msgLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
-		data := make([]byte, msgLen)
-		if _, err := io.ReadFull(stream, data); err != nil {
-			return msg, err
-		}
-		plaintext, err := decrypt(data, getEncryptionKey())
-		if err != nil {
-			return msg, err
-		}
-		err = json.Unmarshal(plaintext, &msg)
-		return msg, err
-	}
-
 	for {
-		msg, err := readMsg()
+		stream, err := yamuxSession.AcceptStream()
 		if err != nil {
 			if !isNormalCloseError(err) {
 				log.Printf("Bind agent %s read error: %v", directConnectedAgentID, err)
 			}
 			break
 		}
-		actualSourceAgentID := directConnectedAgentID
-		if msg.OriginalAgentID != "" {
-			actualSourceAgentID = msg.OriginalAgentID
-		}
-		if msg.TargetAgentID != "" && msg.TargetAgentID != "server" && msg.TargetAgentID != actualSourceAgentID {
-			relayMsg := Message{
-				Type:            msg.Type,
-				Payload:         msg.Payload,
-				OriginalAgentID: actualSourceAgentID,
-				TargetAgentID:   msg.TargetAgentID,
+		go func(s *smux.Stream) {
+			defer s.Close()
+			lenBuf := make([]byte, 4)
+			if _, err := io.ReadFull(s, lenBuf); err != nil {
+				return
 			}
-			if err := sendControlMessageToAgent(msg.TargetAgentID, relayMsg); err != nil {
-				log.Printf("Bind relay to %s failed: %v", msg.TargetAgentID, err)
+			msgLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
+			if msgLen <= 0 || msgLen > 4<<20 {
+				return
 			}
-			continue
-		}
-		dispatchBindMsg(msg, actualSourceAgentID, agentIP, &directConnectedAgentID)
+			data := make([]byte, msgLen)
+			if _, err := io.ReadFull(s, data); err != nil {
+				return
+			}
+			plaintext, err := decrypt(data, getEncryptionKey())
+			if err != nil {
+				return
+			}
+			var msg Message
+			if err := json.Unmarshal(plaintext, &msg); err != nil {
+				return
+			}
+			actualSourceAgentID := directConnectedAgentID
+			if msg.OriginalAgentID != "" {
+				actualSourceAgentID = msg.OriginalAgentID
+			}
+			if msg.TargetAgentID != "" && msg.TargetAgentID != "server" && msg.TargetAgentID != actualSourceAgentID {
+				relayMsg := Message{
+					Type:            msg.Type,
+					Payload:         msg.Payload,
+					OriginalAgentID: actualSourceAgentID,
+					TargetAgentID:   msg.TargetAgentID,
+				}
+				if err := sendControlMessageToAgent(msg.TargetAgentID, relayMsg); err != nil {
+					log.Printf("Bind relay to %s failed: %v", msg.TargetAgentID, err)
+				}
+				return
+			}
+			dispatchBindMsg(msg, actualSourceAgentID, agentIP, &directConnectedAgentID)
+		}(stream)
 	}
 }
 
-// startWSPingKeepalive sends WebSocket pings on an interval to keep the connection alive.
-func startWSPingKeepalive(ws *websocket.Conn, connID string) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		connLock.Lock()
-		_, alive := directConnections[connID]
-		connLock.Unlock()
-		if !alive {
-			return
-		}
-		deadline := time.Now().Add(30 * time.Second)
-		if err := ws.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
-			ws.Close()
-			return
-		}
-	}
-}

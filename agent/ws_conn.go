@@ -54,13 +54,23 @@ func (c *wsNetConn) Read(b []byte) (int, error) {
 func (c *wsNetConn) Write(b []byte) (int, error) {
 	c.mu <- struct{}{}
 	defer func() { <-c.mu }()
+	c.ws.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	err := c.ws.WriteMessage(websocket.BinaryMessage, b)
-	return len(b), err
+	c.ws.SetWriteDeadline(time.Time{})
+	if err != nil {
+		return 0, err
+	}
+	return len(b), nil
 }
 
-func (c *wsNetConn) Close() error                       { return c.ws.Close() }
-func (c *wsNetConn) LocalAddr() net.Addr                { return c.ws.LocalAddr() }
-func (c *wsNetConn) RemoteAddr() net.Addr               { return c.ws.RemoteAddr() }
-func (c *wsNetConn) SetDeadline(t time.Time) error      { return nil }
-func (c *wsNetConn) SetReadDeadline(t time.Time) error  { return nil }
-func (c *wsNetConn) SetWriteDeadline(t time.Time) error { return nil }
+func (c *wsNetConn) Close() error      { return c.ws.Close() }
+func (c *wsNetConn) LocalAddr() net.Addr  { return c.ws.LocalAddr() }
+func (c *wsNetConn) RemoteAddr() net.Addr { return c.ws.RemoteAddr() }
+func (c *wsNetConn) SetDeadline(t time.Time) error {
+	if err := c.ws.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return c.ws.SetWriteDeadline(t)
+}
+func (c *wsNetConn) SetReadDeadline(t time.Time) error  { return c.ws.SetReadDeadline(t) }
+func (c *wsNetConn) SetWriteDeadline(t time.Time) error { return c.ws.SetWriteDeadline(t) }

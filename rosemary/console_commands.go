@@ -110,6 +110,7 @@ func consoleCmdHelp(parts []string, out *strings.Builder) {
 	out.WriteString("  " + colorBoldCyan + "load-config / save-config" + colorReset + " - import/export config file\n")
 	out.WriteString("  " + colorBoldCyan + "token" + colorReset + "                - list, create, or revoke API tokens\n")
 	out.WriteString("  " + colorBoldCyan + "verbose" + colorReset + "              - toggle verbose logging on/off\n")
+	out.WriteString("  " + colorBoldCyan + "clear" + colorReset + "                - clear the screen\n")
 	out.WriteString("  " + colorBoldCyan + "exit" + colorReset + "                 - shutdown server\n")
 }
 
@@ -542,14 +543,11 @@ func consoleCmdDisconnectAll(out *strings.Builder) {
 	sentCount := 0
 	for _, id := range agentsList {
 		disconnectMsg := Message{Type: "disconnect", Payload: []byte(`{}`), TargetAgentID: id}
-		if err := sendControlMessageToAgent(id, disconnectMsg); err != nil {
-			out.WriteString(fmt.Sprintf(colorBoldRed+"[-]"+colorReset+" Failed to send disconnect to %s%s%s: %v\n", colorCyan, id, colorReset, err))
-		} else {
-			sentCount++
-		}
+		_ = sendControlMessageToAgent(id, disconnectMsg)
+		sentCount++
 	}
 
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 
 	connLock.Lock()
 	for _, id := range agentsList {
@@ -580,9 +578,7 @@ func consoleCmdDisconnectOne(agentID string, out *strings.Builder) {
 		return
 	}
 	disconnectMsg := Message{Type: "disconnect", Payload: []byte(`{}`), TargetAgentID: agentID}
-	if err := sendControlMessageToAgent(agentID, disconnectMsg); err != nil {
-		out.WriteString(fmt.Sprintf(colorBoldRed+"[-]"+colorReset+" Failed to send disconnect message: %v\n", err))
-	}
+	_ = sendControlMessageToAgent(agentID, disconnectMsg)
 	connLock.Lock()
 	directWS, wsOk := directConnections[agentInfo.DirectWSConnID]
 	connLock.Unlock()

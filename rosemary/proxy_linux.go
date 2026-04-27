@@ -56,7 +56,7 @@ const (
 
 var tcpBufPool = sync.Pool{
 	New: func() interface{} {
-		b := make([]byte, 64*1024)
+		b := make([]byte, 256*1024)
 		return &b
 	},
 }
@@ -454,49 +454,61 @@ func handleProxyConnection(localConn net.Conn) {
 		agentID = egress
 	}
 
-	connID := uuid.New().String()
-
-	responseChan := make(chan ConnectResponse, 1)
-	respChanMap.Store(connID, responseChan)
-	defer respChanMap.Delete(connID)
-
-	req := ConnectRequest{
-		TargetHost: dstIP.String(),
-		TargetPort: dstPort,
-		ConnID:     connID,
-		Protocol:   "tcp",
-	}
-	payload, _ := json.Marshal(req)
-	msg := Message{
-		Type:          "connect",
-		Payload:       payload,
-		TargetAgentID: agentID,
-	}
-	if err := sendControlMessageToAgent(agentID, msg); err != nil {
-		logVerbose("Failed to send connect request to agent %s: %v", agentID, err)
-		return
-	}
-
 	resetConn := func() {
 		if tc, ok := localConn.(*net.TCPConn); ok {
 			tc.SetLinger(0)
 		}
 	}
 
-	select {
-	case resp := <-responseChan:
-		if !resp.Success {
+	poolKey := preConnKey(agentID, dstIP.String(), dstPort)
+	connID := popPreConn(poolKey)
+
+	if connID == "" {
+		connID = uuid.New().String()
+		responseChan := make(chan ConnectResponse, 1)
+		respChanMap.Store(connID, responseChan)
+
+		req := ConnectRequest{
+			TargetHost: dstIP.String(),
+			TargetPort: dstPort,
+			ConnID:     connID,
+			Protocol:   "tcp",
+		}
+		payload, _ := json.Marshal(req)
+		msg := Message{
+			Type:          "connect",
+			Payload:       payload,
+			TargetAgentID: agentID,
+		}
+		if err := sendControlMessageToAgent(agentID, msg); err != nil {
+			respChanMap.Delete(connID)
+			logVerbose("Failed to send connect request to agent %s: %v", agentID, err)
+			return
+		}
+
+		select {
+		case resp := <-responseChan:
+			respChanMap.Delete(connID)
+			if !resp.Success {
+				resetConn()
+				return
+			}
+		case <-time.After(20 * time.Second):
+			respChanMap.Delete(connID)
+			logVerbose("Timeout waiting for connect_response for %s:%d", dstIP, dstPort)
 			resetConn()
 			return
 		}
-	case <-time.After(10 * time.Second):
-		logVerbose("Timeout waiting for connect_response for %s:%d", dstIP, dstPort)
-		resetConn()
-		return
 	}
 
-	pendingConns.Store(connID, &pendingConn{conn: localConn, agentID: agentID})
-	defer pendingConns.Delete(connID)
+	go fillPreConnPool(agentID, dstIP.String(), dstPort)
+
+	pc := newPendingConn(localConn, agentID)
+	pendingConns.Store(connID, pc)
+	defer func() {
+		pendingConns.Delete(connID)
+		pc.closeConn()
+	}()
 
 	bufPtr := tcpBufPool.Get().(*[]byte)
 	buf := *bufPtr
@@ -870,7 +882,7 @@ func reloadDefaultEgressRules() error {
 		"-j", "REDIRECT", "--to-port", strconv.Itoa(proxyPort)).CombinedOutput()
 	iptCmd("iptables", "-t", "mangle", "-D", "OUTPUT",
 		"-p", "udp", "!", "-d", "127.0.0.0/8",
-		"!", "--dport", "53", "!", "--dport", "123",
+		"-m", "multiport", "!", "--dports", "53,123",
 		"-j", "MARK", "--set-mark", "1").CombinedOutput()
 
 	for _, subnet := range egressLocalSubnets {
@@ -907,7 +919,7 @@ func reloadDefaultEgressRules() error {
 
 	if out, err := iptCmd("iptables", "-t", "mangle", "-A", "OUTPUT",
 		"-p", "udp", "!", "-d", "127.0.0.0/8",
-		"!", "--dport", "53", "!", "--dport", "123",
+		"-m", "multiport", "!", "--dports", "53,123",
 		"-j", "MARK", "--set-mark", "1").CombinedOutput(); err != nil {
 		return fmt.Errorf("iptables catch-all UDP: %v - %s", err, out)
 	}
@@ -1353,7 +1365,7 @@ func socks5AgentTunnel(client net.Conn, agentID, routeAgentID, targetHost string
 	reply := []byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}
 	binary.BigEndian.PutUint16(reply[8:10], targetPort)
 	client.Write(reply)
-	pendingConns.Store(connID, &pendingConn{conn: client, agentID: agentID})
+	pendingConns.Store(connID, newPendingConn(client, agentID))
 	go func() {
 		defer client.Close()
 		buf := make([]byte, 8192)

@@ -47,7 +47,7 @@ import (
 	"github.com/chzyer/readline"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"github.com/hashicorp/yamux"
+	"github.com/xtaci/smux"
 	"golang.org/x/time/rate"
 )
 
@@ -208,6 +208,7 @@ type RegisterMessage struct {
 	Hostname    string   `json:"hostname"`
 	Username    string   `json:"username"`
 	HasInternet bool     `json:"has_internet"`
+	PrevID      string   `json:"prev_id,omitempty"`
 }
 
 type PingSweepRequest struct {
@@ -484,12 +485,59 @@ func saveConfigFile(path string) error {
 	return os.WriteFile(path, data, 0600)
 }
 
+// recentForwardsByAgent stores port forward configs saved on agent disconnect
+// so they can be restored automatically when the same agent reconnects.
+var recentForwardsByAgent sync.Map // agentID -> []*PortForward
+
+// pendingSubnetCleanups holds the grace-period timers scheduled to remove
+// iptables/route rules after an agent disconnects.  Cancelled if the same
+// agent reconnects before the timer fires.
+var pendingSubnetCleanups sync.Map // agentID -> *time.Timer
+
+// activeSubnetRules tracks subnets whose iptables rules are currently
+// installed.  Used to avoid duplicate rules when an agent reconnects within
+// the grace period before the removal timer has fired.
+var activeSubnetRules sync.Map // subnet -> struct{}
+
+func restoreAgentForwards(agentID string) {
+	val, ok := recentForwardsByAgent.LoadAndDelete(agentID)
+	if !ok {
+		return
+	}
+	forwards := val.([]*PortForward)
+	// Brief delay to ensure agent has processed register_ok and is ready
+	time.Sleep(200 * time.Millisecond)
+
+	connLock.Lock()
+	for _, pf := range forwards {
+		portForwards[pf.ListenerID] = pf
+		portForwardLookup[fmt.Sprintf("%s:%d", pf.DestinationAgentID, pf.AgentListenPort)] = pf.ListenerID
+	}
+	connLock.Unlock()
+
+	for _, pf := range forwards {
+		p, _ := json.Marshal(StartAgentListenerMessage{
+			ListenerID:      pf.ListenerID,
+			AgentListenPort: pf.AgentListenPort,
+			DestinationHost: pf.DestinationHost,
+			DestinationPort: pf.DestinationPort,
+			Protocol:        pf.Protocol,
+		})
+		sendControlMessageToAgent(agentID, Message{ //nolint:errcheck
+			Type:    "start-agent-listener",
+			Payload: p,
+		})
+		log.Printf(colorBoldGreen+"[+]"+colorReset+" Auto-restored forward :%d → %s:%d for agent "+colorYellow+"%s"+colorReset,
+			pf.AgentListenPort, pf.DestinationHost, pf.DestinationPort, agentID)
+	}
+}
+
 var (
 	connections       = make(map[string]*AgentInfo)
 	directConnections = make(map[string]*websocket.Conn)
 
 	wsWriteMus        = make(map[string]*sync.Mutex)
-	yamuxSessions     = make(map[string]*yamux.Session)
+	yamuxSessions     = make(map[string]*smux.Session)
 	connLock          = sync.Mutex{}
 	nextAgentID       = 1
 	routingTable      = &RoutingTable{routes: make(map[string]string)}
@@ -526,7 +574,7 @@ var (
 	ipLimitersMu             sync.Mutex
 	agentConnectionsPerIP    = make(map[string]int)
 	agentConnectionsPerIPMu  sync.Mutex
-	maxAgentConnectionsPerIP = 5
+	maxAgentConnectionsPerIP = 20
 	maxTotalAgents           = 100
 
 	pingHistory   []PingRecord
@@ -901,8 +949,51 @@ const (
 )
 
 type pendingConn struct {
-	conn    net.Conn
-	agentID string
+	conn      net.Conn
+	agentID   string
+	writeCh   chan []byte
+	closeOnce sync.Once
+}
+
+func newPendingConn(conn net.Conn, agentID string) *pendingConn {
+	pc := &pendingConn{
+		conn:    conn,
+		agentID: agentID,
+		writeCh: make(chan []byte, 1024),
+	}
+	go func() {
+		for data := range pc.writeCh {
+			if _, err := conn.Write(data); err != nil {
+				return
+			}
+		}
+	}()
+	return pc
+}
+
+func (p *pendingConn) send(data []byte) {
+	defer func() { recover() }()
+	dataCopy := append([]byte(nil), data...)
+	select {
+	case p.writeCh <- dataCopy:
+	default:
+		// Channel full — send async rather than dropping.
+		go func() {
+			defer func() { recover() }()
+			select {
+			case p.writeCh <- dataCopy:
+			case <-time.After(5 * time.Second):
+				p.closeConn()
+			}
+		}()
+	}
+}
+
+func (p *pendingConn) closeConn() {
+	p.closeOnce.Do(func() {
+		p.conn.Close()
+		close(p.writeCh)
+	})
 }
 
 type udpSession struct {
@@ -2746,7 +2837,7 @@ func sendControlMessageToAgent(agentID string, msg Message) error {
 	}
 
 	if hasYamux && session != nil {
-		stream, err := session.Open()
+		stream, err := session.OpenStream()
 		if err != nil {
 			return fmt.Errorf("yamux open stream: %v", err)
 		}
@@ -3157,7 +3248,7 @@ func removeRoute(subnet string) error {
 				log.Printf("Failed to remove route %s: %v", networkStr, err)
 			}
 		} else {
-			log.Printf("Removed route: %s", networkStr)
+			logVerbose("Removed route: %s", networkStr)
 		}
 		removeRouteFromSlice(networkStr)
 		return nil
@@ -3214,42 +3305,6 @@ func cleanupAll() {
 	stopProxies()
 }
 
-func startAgentWatchdog() {
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			threshold := time.Now().Add(-90 * time.Second)
-			agentLastSeenMu.Lock()
-			var stale []string
-			for agentID, lastSeen := range agentLastSeen {
-				if lastSeen.Before(threshold) {
-					stale = append(stale, agentID)
-				}
-			}
-			agentLastSeenMu.Unlock()
-
-			if len(stale) == 0 {
-				continue
-			}
-			connLock.Lock()
-			for _, agentID := range stale {
-				info, ok := connections[agentID]
-				if !ok {
-					continue
-				}
-				if ws, wsOk := directConnections[info.DirectWSConnID]; wsOk {
-					logVerbose("[WARN]  Watchdog: evicting stale agent %s (no heartbeat for 90s)", agentID)
-					ws.Close()
-				} else if sess, sessOk := yamuxSessions[info.DirectWSConnID]; sessOk {
-					logVerbose("[WARN]  Watchdog: evicting stale bind agent %s (no heartbeat for 90s)", agentID)
-					sess.Close()
-				}
-			}
-			connLock.Unlock()
-		}
-	}()
-}
 
 func handleConnectBind(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -4132,8 +4187,8 @@ func main() {
 
 	initServerKey(*agentKey)
 
-	startAgentWatchdog()
 	startLoginCsrfCleaner()
+	startPreConnSweeper()
 
 	serverIPs = getServerIPs()
 	log.Printf(colorBoldCyan+"Server IPs: "+colorReset+colorBoldWhite+"%v"+colorReset, serverIPs)
@@ -4424,7 +4479,9 @@ func handlePortForward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	listenerKey := fmt.Sprintf("%s:%d", destinationAgentID, agentListenPort)
+	connLock.Lock()
 	if _, exists := portForwardLookup[listenerKey]; exists {
+		connLock.Unlock()
 		http.Error(w, fmt.Sprintf("Agent %s already has a listener on port %d", destinationAgentID, agentListenPort), http.StatusConflict)
 		return
 	}
@@ -4439,6 +4496,7 @@ func handlePortForward(w http.ResponseWriter, r *http.Request) {
 	}
 	portForwards[listenerID] = pf
 	portForwardLookup[listenerKey] = listenerID
+	connLock.Unlock()
 	startMsgPayload, _ := json.Marshal(StartAgentListenerMessage{
 		ListenerID:      listenerID,
 		AgentListenPort: agentListenPort,
@@ -4453,8 +4511,10 @@ func handlePortForward(w http.ResponseWriter, r *http.Request) {
 		TargetAgentID:   destinationAgentID,
 	}
 	if err := sendControlMessageToAgent(destinationAgentID, controlMessage); err != nil {
+		connLock.Lock()
 		delete(portForwards, listenerID)
 		delete(portForwardLookup, listenerKey)
+		connLock.Unlock()
 		log.Printf("Failed to send command to agent: %v", err)
 		http.Error(w, "Failed to instruct agent", http.StatusInternalServerError)
 		return
@@ -4723,9 +4783,11 @@ func handleReverseForwardConn(clientConn net.Conn, agentID, targetHost string, t
 		return
 	}
 
-	pendingConns.Store(connID, &pendingConn{conn: clientConn, agentID: agentID})
+	pc := newPendingConn(clientConn, agentID)
+	pendingConns.Store(connID, pc)
 	defer func() {
 		pendingConns.Delete(connID)
+		pc.closeConn()
 	}()
 
 	sendData := func(data []byte, close bool) {
@@ -4785,7 +4847,7 @@ func handleAgentFwdOpen(req AgentFwdOpen, agentID string) {
 	serverFwdConns.Store(req.ConnID, fc)
 
 	sendAck(true, "")
-	log.Printf("agent_fwd: tunnel open %s for agent %s (conn %s)", targetAddr, agentID, req.ConnID)
+	logVerbose("agent_fwd: tunnel open %s for agent %s (conn %s)", targetAddr, agentID, req.ConnID)
 
 	sendData := func(data []byte, close bool) {
 		dm := DataMessage{ConnID: req.ConnID, Data: data, Close: close}
