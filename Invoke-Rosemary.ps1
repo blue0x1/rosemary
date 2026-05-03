@@ -308,6 +308,18 @@ public class RosemaryAgent {
     string GetUser() { try { return System.Security.Principal.WindowsIdentity.GetCurrent().Name; } catch { return ""; } }
     bool HasInternet() { try { using (var c = new TcpClient()) { c.Connect("8.8.8.8", 53); return true; } } catch { return false; } }
 
+    async Task<TcpClient> ConnectTcpWithTimeout(string host, int port, int timeoutMs) {
+        var tc = new TcpClient();
+        var connectTask = tc.ConnectAsync(host, port);
+        var timeoutTask = Task.Delay(timeoutMs);
+        if (await Task.WhenAny(connectTask, timeoutTask) != connectTask) {
+            try { tc.Close(); } catch { }
+            throw new TimeoutException("connect timeout");
+        }
+        await connectTask;
+        return tc;
+    }
+
     List<string> GetSubnets() {
         var seen = new HashSet<string>();
         foreach (var iface in NetworkInterface.GetAllNetworkInterfaces()) {
@@ -466,7 +478,7 @@ public class RosemaryAgent {
                     try { await SendMsg(write, "data", "{\"conn_id\":\"" + cid + "\",\"close\":true}", _agentId); } catch { }
                 });
             } else {
-                var tc = new TcpClient(); await tc.ConnectAsync(host, port); _tcp[cid] = tc;
+                var tc = await ConnectTcpWithTimeout(host, port, 5000); _tcp[cid] = tc;
                 await SendMsg(write, "connect_response", "{\"conn_id\":\"" + cid + "\",\"success\":true}", _agentId);
                 Task.Run(async () => {
                     try {
@@ -691,7 +703,7 @@ public class RosemaryAgent {
                         while (!lcts.Token.IsCancellationRequested) {
                             var client = await ln.AcceptTcpClientAsync();
                             Task.Run(async () => {
-                                try { using (var dest = new TcpClient()) { await dest.ConnectAsync(dhost, dport); var t1 = client.GetStream().CopyToAsync(dest.GetStream()); var t2 = dest.GetStream().CopyToAsync(client.GetStream()); await Task.WhenAny(t1, t2); } } catch { }
+                                try { using (var dest = await ConnectTcpWithTimeout(dhost, dport, 5000)) { var t1 = client.GetStream().CopyToAsync(dest.GetStream()); var t2 = dest.GetStream().CopyToAsync(client.GetStream()); await Task.WhenAny(t1, t2); } } catch { }
                                 finally { if (client != null) client.Close(); }
                             });
                         }
