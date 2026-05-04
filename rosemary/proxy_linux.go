@@ -363,6 +363,12 @@ func handleUDPPacket(localConn *net.UDPConn, clientAddr *net.UDPAddr, origDst *n
 	if val, ok := pendingUDPConns.Load(sessionKey); ok {
 		session = val.(*udpSession)
 	} else {
+		releaseSlot, err := acquireConnectSlot(agentID, origDst.IP.String(), origDst.Port)
+		if err != nil {
+			logVerbose("UDP connect throttled for %s:%d via %s: %v", origDst.IP, origDst.Port, agentID, err)
+			return
+		}
+		defer releaseSlot()
 
 		connID := uuid.New().String()
 		session = &udpSession{
@@ -411,6 +417,7 @@ func handleUDPPacket(localConn *net.UDPConn, clientAddr *net.UDPAddr, origDst *n
 			}
 		case <-time.After(5 * time.Second):
 			logVerbose("Timeout waiting for UDP connect_response from agent %s connID %s", agentID, connID)
+			closePreConnAtAgent(agentID, connID)
 			respChanMap.Delete(connID)
 			pendingUDPConns.Delete(sessionKey)
 			pendingUDPConns.Delete(connID)
@@ -464,6 +471,14 @@ func handleProxyConnection(localConn net.Conn) {
 	connID := popPreConn(poolKey)
 
 	if connID == "" {
+		releaseSlot, err := acquireConnectSlot(agentID, dstIP.String(), dstPort)
+		if err != nil {
+			logVerbose("Connect throttled for %s:%d via %s: %v", dstIP, dstPort, agentID, err)
+			resetConn()
+			return
+		}
+		defer releaseSlot()
+
 		connID = uuid.New().String()
 		responseChan := make(chan ConnectResponse, 1)
 		respChanMap.Store(connID, responseChan)
@@ -483,6 +498,7 @@ func handleProxyConnection(localConn net.Conn) {
 		if err := sendControlMessageToAgent(agentID, msg); err != nil {
 			respChanMap.Delete(connID)
 			logVerbose("Failed to send connect request to agent %s: %v", agentID, err)
+			closePreConnAtAgent(agentID, connID)
 			return
 		}
 
@@ -493,9 +509,10 @@ func handleProxyConnection(localConn net.Conn) {
 				resetConn()
 				return
 			}
-		case <-time.After(20 * time.Second):
+		case <-time.After(agentConnectResponseTimeout):
 			respChanMap.Delete(connID)
 			logVerbose("Timeout waiting for connect_response for %s:%d", dstIP, dstPort)
+			closePreConnAtAgent(agentID, connID)
 			resetConn()
 			return
 		}
@@ -1338,18 +1355,28 @@ func socks5DirectTunnel(client net.Conn, agentID, targetHost string, targetPort 
 }
 
 func socks5AgentTunnel(client net.Conn, agentID, routeAgentID, targetHost string, targetPort uint16) {
+	releaseSlot, err := acquireConnectSlot(routeAgentID, targetHost, int(targetPort))
+	if err != nil {
+		logVerbose("SOCKS connect throttled for %s:%d via %s: %v", targetHost, targetPort, routeAgentID, err)
+		client.Write([]byte{5, 6, 0, 1, 0, 0, 0, 0, 0, 0})
+		return
+	}
+	defer releaseSlot()
+
 	connID := uuid.New().String()
+	responseChan := make(chan ConnectResponse, 1)
+	respChanMap.Store(connID, responseChan)
+	defer respChanMap.Delete(connID)
+
 	req := ConnectRequest{TargetHost: targetHost, TargetPort: int(targetPort), ConnID: connID, Protocol: "tcp"}
 	payload, _ := json.Marshal(req)
 	msg := Message{Type: "connect", Payload: payload, TargetAgentID: routeAgentID}
 	if err := sendControlMessageToAgent(routeAgentID, msg); err != nil {
 		logVerbose("Failed to send connect request to agent %s: %v", routeAgentID, err)
+		closePreConnAtAgent(routeAgentID, connID)
 		client.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0})
 		return
 	}
-	responseChan := make(chan ConnectResponse, 1)
-	respChanMap.Store(connID, responseChan)
-	defer respChanMap.Delete(connID)
 	select {
 	case resp := <-responseChan:
 		if !resp.Success {
@@ -1357,33 +1384,38 @@ func socks5AgentTunnel(client net.Conn, agentID, routeAgentID, targetHost string
 			logVerbose("Agent %s failed to connect to %s:%d: %s", routeAgentID, targetHost, targetPort, resp.Error)
 			return
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(agentConnectResponseTimeout):
 		client.Write([]byte{5, 6, 0, 1, 0, 0, 0, 0, 0, 0})
 		logVerbose("Timeout waiting for agent %s to connect to %s:%d", routeAgentID, targetHost, targetPort)
+		closePreConnAtAgent(routeAgentID, connID)
 		return
 	}
 	reply := []byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}
 	binary.BigEndian.PutUint16(reply[8:10], targetPort)
 	client.Write(reply)
-	pendingConns.Store(connID, newPendingConn(client, agentID))
-	go func() {
-		defer client.Close()
-		buf := make([]byte, 8192)
-		for {
-			n, err := client.Read(buf)
-			if err != nil {
-				dataMsg := DataMessage{ConnID: connID, Close: true}
-				payload, _ := json.Marshal(dataMsg)
-				sendControlMessageToAgent(routeAgentID, Message{Type: "data", Payload: payload, TargetAgentID: routeAgentID})
-				pendingConns.Delete(connID)
-				return
-			}
-			dataMsg := DataMessage{ConnID: connID, Data: buf[:n]}
-			payload, _ := json.Marshal(dataMsg)
-			sendControlMessageToAgent(routeAgentID, Message{Type: "data", Payload: payload, TargetAgentID: routeAgentID})
-		}
+	pc := newPendingConn(client, agentID)
+	pendingConns.Store(connID, pc)
+	defer func() {
+		pendingConns.Delete(connID)
+		pc.closeConn()
 	}()
 	logVerbose("SOCKS5 %s:%d → %s (via %s, conn %s)", targetHost, targetPort, routeAgentID, agentID, connID)
+
+	buf := make([]byte, 8192)
+	for {
+		n, err := client.Read(buf)
+		if err != nil {
+			dataMsg := DataMessage{ConnID: connID, Close: true}
+			payload, _ := json.Marshal(dataMsg)
+			sendControlMessageToAgent(routeAgentID, Message{Type: "data", Payload: payload, TargetAgentID: routeAgentID})
+			return
+		}
+		dataMsg := DataMessage{ConnID: connID, Data: buf[:n]}
+		payload, _ := json.Marshal(dataMsg)
+		if err := sendControlMessageToAgent(routeAgentID, Message{Type: "data", Payload: payload, TargetAgentID: routeAgentID}); err != nil {
+			return
+		}
+	}
 }
 
 func handleSocks5Request(client net.Conn, agentID, username, password string) {

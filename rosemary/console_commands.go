@@ -19,33 +19,33 @@ import (
 type consoleCmdFn func(parts []string, out *strings.Builder)
 
 var consoleCmds = map[string]consoleCmdFn{
-	"help":           consoleCmdHelp,
-	"agents":         consoleCmdAgents,
-	"egress":         consoleCmdEgress,
-	"routes":         consoleCmdRoutes,
-	"discover":       consoleCmdDiscover,
-	"forwards":       consoleCmdForwards,
-	"socks":          consoleCmdSocks,
-	"reconnect":      consoleCmdReconnect,
-	"disconnect":     consoleCmdDisconnect,
-	"port":           consoleCmdPort,
-	"tcp-port":       consoleCmdTCPPort,
-	"udp-port":       consoleCmdUDPPort,
-	"dns-port":       consoleCmdDNSPort,
-	"rotate-key":     consoleCmdRotateKey,
-	"settings":       consoleCmdSettings,
-	"ping":           consoleCmdPing,
-	"forward":        consoleCmdForward,
-	"rforward":       consoleCmdRForward,
-	"portscan":       consoleCmdPortScan,
-	"connect":        consoleCmdConnect,
-	"load-config":    consoleCmdLoadConfig,
-	"save-config":    consoleCmdSaveConfig,
-	"verbose":        consoleCmdVerbose,
-	"exit":           consoleCmdExit,
-	"token":          consoleCmdToken,
-	"tag":            consoleCmdTag,
-	"clear":          consoleCmdClear,
+	"help":        consoleCmdHelp,
+	"agents":      consoleCmdAgents,
+	"egress":      consoleCmdEgress,
+	"routes":      consoleCmdRoutes,
+	"discover":    consoleCmdDiscover,
+	"forwards":    consoleCmdForwards,
+	"socks":       consoleCmdSocks,
+	"reconnect":   consoleCmdReconnect,
+	"disconnect":  consoleCmdDisconnect,
+	"port":        consoleCmdPort,
+	"tcp-port":    consoleCmdTCPPort,
+	"udp-port":    consoleCmdUDPPort,
+	"dns-port":    consoleCmdDNSPort,
+	"rotate-key":  consoleCmdRotateKey,
+	"settings":    consoleCmdSettings,
+	"ping":        consoleCmdPing,
+	"forward":     consoleCmdForward,
+	"rforward":    consoleCmdRForward,
+	"portscan":    consoleCmdPortScan,
+	"connect":     consoleCmdConnect,
+	"load-config": consoleCmdLoadConfig,
+	"save-config": consoleCmdSaveConfig,
+	"verbose":     consoleCmdVerbose,
+	"exit":        consoleCmdExit,
+	"token":       consoleCmdToken,
+	"tag":         consoleCmdTag,
+	"clear":       consoleCmdClear,
 }
 
 func consoleCmdHelp(parts []string, out *strings.Builder) {
@@ -849,12 +849,12 @@ func consoleCmdForwardAdd(args []string, out *strings.Builder) {
 		OriginalAgentID: "server",
 		TargetAgentID:   agentID,
 	}
-	if err := sendControlMessageToAgent(agentID, controlMessage); err != nil {
+	if err := startAgentListenerAndWait(agentID, listenerID, controlMessage); err != nil {
 		connLock.Lock()
 		delete(portForwards, listenerID)
 		delete(portForwardLookup, listenerKey)
 		connLock.Unlock()
-		out.WriteString(fmt.Sprintf(colorBoldRed+"[-]"+colorReset+" Failed to send command: %v\n", err))
+		out.WriteString(fmt.Sprintf(colorBoldRed+"[-]"+colorReset+" Failed to start listener: %v\n", err))
 		return
 	}
 	out.WriteString(fmt.Sprintf(colorBoldGreen+"[+]"+colorReset+" Forward added: "+colorYellow+"localhost:%d"+colorReset+" -> agent %s%s%s -> "+colorYellow+"%s:%d"+colorReset+" (%s)\n",

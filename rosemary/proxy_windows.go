@@ -570,6 +570,13 @@ func handleProxyConnection(localConn net.Conn) {
 		agentID = egress
 	}
 
+	releaseSlot, err := acquireConnectSlot(agentID, dstIP.String(), dstPort)
+	if err != nil {
+		logVerbose("connect throttled for %s:%d via %s: %v", dstIP, dstPort, agentID, err)
+		return
+	}
+	defer releaseSlot()
+
 	connID := uuid.New().String()
 
 	// Register response channel before sending connect so we don't miss the reply.
@@ -591,6 +598,7 @@ func handleProxyConnection(localConn net.Conn) {
 	}
 	if err := sendControlMessageToAgent(agentID, msg); err != nil {
 		logVerbose("connect request to agent %s: %v", agentID, err)
+		closePreConnAtAgent(agentID, connID)
 		return
 	}
 
@@ -607,14 +615,19 @@ func handleProxyConnection(localConn net.Conn) {
 			resetConn()
 			return
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(agentConnectResponseTimeout):
 		logVerbose("timeout waiting for connect_response for %s:%d", dstIP, dstPort)
+		closePreConnAtAgent(agentID, connID)
 		resetConn()
 		return
 	}
 
-	pendingConns.Store(connID, &pendingConn{conn: localConn, agentID: agentID})
-	defer pendingConns.Delete(connID)
+	pc := newPendingConn(localConn, agentID)
+	pendingConns.Store(connID, pc)
+	defer func() {
+		pendingConns.Delete(connID)
+		pc.closeConn()
+	}()
 
 	buf := make([]byte, 32*1024)
 	for {
@@ -1579,17 +1592,27 @@ func socks5DirectTunnel(client net.Conn, agentID, targetHost string, targetPort 
 }
 
 func socks5AgentTunnel(client net.Conn, agentID, routeAgentID, targetHost string, targetPort uint16) {
+	releaseSlot, err := acquireConnectSlot(routeAgentID, targetHost, int(targetPort))
+	if err != nil {
+		logVerbose("SOCKS connect throttled for %s:%d via %s: %v", targetHost, targetPort, routeAgentID, err)
+		client.Write([]byte{5, 6, 0, 1, 0, 0, 0, 0, 0, 0})
+		return
+	}
+	defer releaseSlot()
+
 	connID := uuid.New().String()
+	responseChan := make(chan ConnectResponse, 1)
+	respChanMap.Store(connID, responseChan)
+	defer respChanMap.Delete(connID)
+
 	req := ConnectRequest{TargetHost: targetHost, TargetPort: int(targetPort), ConnID: connID, Protocol: "tcp"}
 	payload, _ := json.Marshal(req)
 	if err := sendControlMessageToAgent(routeAgentID, Message{Type: "connect", Payload: payload, TargetAgentID: routeAgentID}); err != nil {
 		logVerbose("Failed to send connect request to agent %s: %v", routeAgentID, err)
+		closePreConnAtAgent(routeAgentID, connID)
 		client.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0})
 		return
 	}
-	responseChan := make(chan ConnectResponse, 1)
-	respChanMap.Store(connID, responseChan)
-	defer respChanMap.Delete(connID)
 	select {
 	case resp := <-responseChan:
 		if !resp.Success {
@@ -1597,17 +1620,23 @@ func socks5AgentTunnel(client net.Conn, agentID, routeAgentID, targetHost string
 			logVerbose("Agent %s failed to connect to %s:%d: %s", routeAgentID, targetHost, targetPort, resp.Error)
 			return
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(agentConnectResponseTimeout):
 		client.Write([]byte{5, 6, 0, 1, 0, 0, 0, 0, 0, 0})
 		logVerbose("Timeout waiting for agent %s to connect to %s:%d", routeAgentID, targetHost, targetPort)
+		closePreConnAtAgent(routeAgentID, connID)
 		return
 	}
 	reply := []byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}
 	binary.BigEndian.PutUint16(reply[8:10], targetPort)
 	client.Write(reply)
-	pendingConns.Store(connID, &pendingConn{conn: client, agentID: agentID})
+	pc := newPendingConn(client, agentID)
+	pendingConns.Store(connID, pc)
 	done := make(chan struct{})
-	defer close(done)
+	defer func() {
+		pendingConns.Delete(connID)
+		pc.closeConn()
+		close(done)
+	}()
 	go func() {
 		buf := make([]byte, 8192)
 		for {

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,44 @@ import (
 	"github.com/xtaci/smux"
 	"golang.org/x/time/rate"
 )
+
+type recentAgentID struct {
+	ID        string
+	ConnID    string
+	ExpiresAt time.Time
+}
+
+func agentFingerprint(osName, hostname, username string, subnets []string) string {
+	cp := append([]string(nil), subnets...)
+	sort.Strings(cp)
+	return strings.Join([]string{osName, hostname, username, strings.Join(cp, ",")}, "\x00")
+}
+
+func rememberRecentAgentID(info *AgentInfo) {
+	key := agentFingerprint(info.OS, info.Hostname, info.Username, info.Subnets)
+	recentAgentIDs.Store(key, recentAgentID{
+		ID:        info.ID,
+		ConnID:    info.DirectWSConnID,
+		ExpiresAt: time.Now().Add(2 * time.Minute),
+	})
+}
+
+func reclaimRecentAgentID(registerMsg RegisterMessage) (string, bool) {
+	key := agentFingerprint(registerMsg.OS, registerMsg.Hostname, registerMsg.Username, registerMsg.Subnets)
+	v, ok := recentAgentIDs.Load(key)
+	if !ok {
+		return "", false
+	}
+	recent := v.(recentAgentID)
+	if time.Now().After(recent.ExpiresAt) {
+		recentAgentIDs.Delete(key)
+		return "", false
+	}
+	if _, taken := connections[recent.ID]; taken {
+		return "", false
+	}
+	return recent.ID, true
+}
 
 // authenticateWSAgent performs the challenge-response authentication handshake.
 func authenticateWSAgent(ws *websocket.Conn, agentIP string) bool {
@@ -84,6 +123,7 @@ func cleanupAgentConn(connID string) {
 	subnetsByAgent := make(map[string][]string)
 	for id := range removedSet {
 		if agentInfo, ok := connections[id]; ok {
+			rememberRecentAgentID(agentInfo)
 			subnetsByAgent[id] = agentInfo.Subnets
 			delete(connections, id)
 			log.Printf(colorBoldRed+"[-]"+colorReset+" Agent "+colorYellow+"%s"+colorReset+" disconnected and removed.", id)
@@ -212,6 +252,18 @@ func cleanupAgentConn(connID string) {
 		}
 		return true
 	})
+	pendingUDPConns.Range(func(key, value interface{}) bool {
+		if session, ok := value.(*udpSession); ok && removedSet[session.agentID] {
+			pendingUDPConns.Delete(key)
+		}
+		return true
+	})
+	for agentID := range removedSet {
+		purgePreConnPoolsForAgent(agentID)
+		agentLastSeenMu.Lock()
+		delete(agentLastSeen, agentID)
+		agentLastSeenMu.Unlock()
+	}
 	triggerDashboardBroadcast()
 }
 
@@ -267,6 +319,8 @@ func dispatchConnMsg(msg Message, sourceID string, agentIP string, connID *strin
 		handleMsgConnectResp(msg)
 	case "dns_response":
 		handleMsgDNSResp(msg)
+	case "start-agent-listener-response":
+		handleMsgStartAgentListenerResp(msg)
 	case "heartbeat":
 		handleMsgHeartbeat(sourceID)
 	case "forward":
@@ -297,6 +351,8 @@ func dispatchBindMsg(msg Message, sourceID string, agentIP string, connID *strin
 		handleMsgConnectResp(msg)
 	case "dns_response":
 		handleMsgDNSResp(msg)
+	case "start-agent-listener-response":
+		handleMsgStartAgentListenerResp(msg)
 	case "heartbeat":
 		handleMsgHeartbeat(sourceID)
 	case "forward":
@@ -359,6 +415,18 @@ func handleMsgRegisterWS(msg Message, sourceID string, agentIP string, connID *s
 							registerMsg.PrevID, time.Since(prevLastSeen).Seconds(), sourceID)
 						registeringAgentID = registerMsg.PrevID
 					}
+				}
+			}
+			if registeringAgentID == *connID {
+				if recentID, ok := reclaimRecentAgentID(registerMsg); ok {
+					registeringAgentID = recentID
+					logVerbose("Reclaimed recent bind agent ID %s for %s/%s", recentID, registerMsg.Hostname, registerMsg.Username)
+				}
+			}
+			if registeringAgentID == *connID {
+				if recentID, ok := reclaimRecentAgentID(registerMsg); ok {
+					registeringAgentID = recentID
+					logVerbose("Reclaimed recent agent ID %s for %s/%s", recentID, registerMsg.Hostname, registerMsg.Username)
 				}
 			}
 			// Fall back to new sequential ID if PrevID unavailable
@@ -588,16 +656,35 @@ func handleMsgDNSResp(msg Message) {
 	}
 }
 
+func handleMsgStartAgentListenerResp(msg Message) {
+	var resp StartAgentListenerResponse
+	if err := json.Unmarshal(msg.Payload, &resp); err != nil {
+		log.Printf("Invalid start-agent-listener-response: %v", err)
+		return
+	}
+	if ch, ok := listenerStartAcks.Load(resp.ListenerID); ok {
+		select {
+		case ch.(chan StartAgentListenerResponse) <- resp:
+		default:
+		}
+	}
+}
+
 func handleMsgHeartbeat(agentID string) {
+	markAgentSeen(agentID)
+	triggerDashboardBroadcast()
+}
+
+func markAgentSeen(agentID string) {
+	now := time.Now()
 	agentLastSeenMu.Lock()
-	agentLastSeen[agentID] = time.Now()
+	agentLastSeen[agentID] = now
 	agentLastSeenMu.Unlock()
 	connLock.Lock()
 	if info, ok := connections[agentID]; ok {
-		info.LastSeen = time.Now()
+		info.LastSeen = now
 	}
 	connLock.Unlock()
-	triggerDashboardBroadcast()
 }
 
 func handleMsgForward(msg Message, sourceID string) {
@@ -817,6 +904,7 @@ func readWSAgentMsg(ws *websocket.Conn, yamuxSession *smux.Session, yamuxErr err
 			if err != nil {
 				return msg, err // session-level error — caller will close connection
 			}
+			_ = stream.SetReadDeadline(time.Now().Add(10 * time.Second))
 			lenBuf := make([]byte, 4)
 			if _, err := io.ReadFull(stream, lenBuf); err != nil {
 				stream.Close()
@@ -824,12 +912,18 @@ func readWSAgentMsg(ws *websocket.Conn, yamuxSession *smux.Session, yamuxErr err
 				continue
 			}
 			msgLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
+			if msgLen <= 0 || msgLen > 4<<20 {
+				stream.Close()
+				logVerbose("Server: yamux invalid frame length %d", msgLen)
+				continue
+			}
 			data := make([]byte, msgLen)
 			if _, err := io.ReadFull(stream, data); err != nil {
 				stream.Close()
 				logVerbose("Server: yamux read data error (skipping stream): %v", err)
 				continue
 			}
+			_ = stream.SetReadDeadline(time.Time{})
 			stream.Close()
 			plaintext, err := decrypt(data, getEncryptionKey())
 			if err != nil {
@@ -843,6 +937,7 @@ func readWSAgentMsg(ws *websocket.Conn, yamuxSession *smux.Session, yamuxErr err
 	if err != nil {
 		return msg, err
 	}
+	ws.SetReadDeadline(time.Now().Add(90 * time.Second))
 	plaintext, err := decrypt(encrypted, getEncryptionKey())
 	if err != nil {
 		return msg, err
@@ -909,10 +1004,18 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { cleanupAgentConn(directConnectedAgentID) }()
 
-	// WS-level pong handler for non-yamux agents — resets read deadline on each pong
+	// Raw WS agents send ping frames; refresh the read deadline on any
+	// control traffic and reply explicitly so the agent can refresh its side.
 	if yamuxErr != nil {
-		pongWait := 30 * time.Second
+		pongWait := 90 * time.Second
 		ws.SetReadDeadline(time.Now().Add(pongWait))
+		ws.SetPingHandler(func(appData string) error {
+			ws.SetReadDeadline(time.Now().Add(pongWait))
+			ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			err := ws.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
+			ws.SetWriteDeadline(time.Time{})
+			return err
+		})
 		ws.SetPongHandler(func(string) error {
 			ws.SetReadDeadline(time.Now().Add(pongWait))
 			return nil
@@ -1018,4 +1121,3 @@ func handleBindAgentConn(conn net.Conn, state *bindConnectState) {
 		}(stream)
 	}
 }
-

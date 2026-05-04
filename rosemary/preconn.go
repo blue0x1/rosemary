@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	preConnPoolSize = 12
+	preConnPoolSize = 0
 	preConnTTL      = 25 * time.Second
 )
 
@@ -21,8 +21,8 @@ type preConnEntry struct {
 }
 
 type preConnPool struct {
-	mu     sync.Mutex
-	ready  []preConnEntry
+	mu      sync.Mutex
+	ready   []preConnEntry
 	filling int
 	capObs  int // observed server connection cap; 0 = unknown
 }
@@ -96,7 +96,45 @@ func startPreConnSweeper() {
 	}()
 }
 
+func purgePreConnPoolsForAgent(agentID string) {
+	preConnPools.Range(func(k, v interface{}) bool {
+		p := v.(*preConnPool)
+		p.mu.Lock()
+		var keep []preConnEntry
+		for _, e := range p.ready {
+			if e.agentID == agentID {
+				go closePreConnAtAgent(e.agentID, e.connID)
+				continue
+			}
+			keep = append(keep, e)
+		}
+		p.ready = keep
+		p.mu.Unlock()
+		if len(keep) == 0 {
+			preConnPools.Delete(k)
+		}
+		return true
+	})
+}
+
+func agentConnectionStamp(agentID string) (time.Time, bool) {
+	connLock.Lock()
+	defer connLock.Unlock()
+	info, ok := connections[agentID]
+	if !ok {
+		return time.Time{}, false
+	}
+	return info.ConnectedAt, true
+}
+
 func fillPreConnPool(agentID, host string, port int) {
+	if preConnPoolSize <= 0 {
+		return
+	}
+	startedAt, connected := agentConnectionStamp(agentID)
+	if !connected {
+		return
+	}
 	key := preConnKey(agentID, host, port)
 	p := getOrCreatePreConnPool(key)
 
@@ -143,35 +181,39 @@ func fillPreConnPool(agentID, host string, port int) {
 			case resp := <-rch:
 				results <- result{cid, resp.Success}
 			case <-time.After(20 * time.Second):
+				closePreConnAtAgent(agentID, cid)
 				results <- result{"", false}
 			}
 		}(connID, ch)
 	}
 
-	ok := 0
+	successes := 0
 	for i := 0; i < needed; i++ {
 		r := <-results
+		currentStartedAt, stillConnected := agentConnectionStamp(agentID)
 		p.mu.Lock()
 		p.filling--
-		if r.ok {
-			ok++
+		if r.ok && stillConnected && currentStartedAt.Equal(startedAt) {
+			successes++
 			p.ready = append(p.ready, preConnEntry{
 				connID:  r.connID,
 				agentID: agentID,
 				born:    time.Now(),
 			})
+		} else if r.ok {
+			go closePreConnAtAgent(agentID, r.connID)
 		}
 		p.mu.Unlock()
 	}
 	// If the server rejected connections, record the observed cap so future
 	// fill attempts don't exhaust the server's concurrent connection limit.
-	if ok < needed {
+	if successes < needed {
 		p.mu.Lock()
-		observed := ok + len(p.ready)
+		observed := successes + len(p.ready)
 		if p.capObs == 0 || observed < p.capObs {
 			p.capObs = observed
 		}
 		p.mu.Unlock()
 	}
-	logVerbose("Pre-conn pool filled %d/%d for %s:%d via %s", ok, needed, host, port, agentID)
+	logVerbose("Pre-conn pool filled %d/%d for %s:%d via %s", successes, needed, host, port, agentID)
 }

@@ -238,6 +238,12 @@ type StartAgentListenerMessage struct {
 	Protocol        string `json:"protocol"`
 }
 
+type StartAgentListenerResponse struct {
+	ListenerID string `json:"listener_id"`
+	Success    bool   `json:"success"`
+	Error      string `json:"error,omitempty"`
+}
+
 type StopAgentListenerMessage struct {
 	ListenerID string `json:"listener_id"`
 }
@@ -294,6 +300,7 @@ type AgentFwdOpen struct {
 	ConnID     string `json:"conn_id"`
 	TargetHost string `json:"target_host"`
 	TargetPort int    `json:"target_port"`
+	ClientAddr string `json:"client_addr,omitempty"`
 }
 
 type AgentFwdAck struct {
@@ -574,6 +581,8 @@ var (
 	agentLastSeen      = make(map[string]time.Time)
 	agentLastSeenMu    sync.Mutex
 	pendingDNSRequests sync.Map
+	listenerStartAcks  sync.Map
+	recentAgentIDs     sync.Map
 	nextDNSRequestID   uint32
 	dnsProxyStarted    bool
 
@@ -929,6 +938,8 @@ const (
 	rateLimit      = 5
 	rateBurst      = 10
 	udpTimeout     = 60 * time.Second
+
+	agentConnectResponseTimeout = 8 * time.Second
 )
 
 type pendingConn struct {
@@ -1578,12 +1589,12 @@ func handleAPIForwardsCreate(w http.ResponseWriter, r *http.Request) {
 		OriginalAgentID: "server",
 		TargetAgentID:   req.AgentID,
 	}
-	if err := sendControlMessageToAgent(req.AgentID, msg); err != nil {
+	if err := startAgentListenerAndWait(req.AgentID, listenerID, msg); err != nil {
 		connLock.Lock()
 		delete(portForwards, listenerID)
 		delete(portForwardLookup, listenerKey)
 		connLock.Unlock()
-		http.Error(w, `{"error":"send_failed"}`, http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf(`{"error":"listener_start_failed","detail":%q}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 	log.Printf(colorBoldGreen+"[+]"+colorReset+" "+colorDim+"[API]"+colorReset+" Port forward created: agent "+colorYellow+"%s"+colorReset+" :"+colorCyan+"%d"+colorReset+" -> "+colorCyan+"%s:%d"+colorReset, req.AgentID, req.ListenPort, req.TargetHost, req.TargetPort)
@@ -2786,10 +2797,12 @@ func sendControlMessageToAgent(agentID string, msg Message) error {
 			return fmt.Errorf("yamux open stream: %v", err)
 		}
 		defer stream.Close()
+		_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
 		l := len(encrypted)
 		buf := []byte{byte(l >> 24), byte(l >> 16), byte(l >> 8), byte(l)}
 		buf = append(buf, encrypted...)
 		_, err = stream.Write(buf)
+		_ = stream.SetDeadline(time.Time{})
 		return err
 	}
 
@@ -2801,7 +2814,33 @@ func sendControlMessageToAgent(agentID string, msg Message) error {
 		wsmu.Lock()
 		defer wsmu.Unlock()
 	}
-	return directWSConn.WriteMessage(websocket.BinaryMessage, encrypted)
+	directWSConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	err = directWSConn.WriteMessage(websocket.BinaryMessage, encrypted)
+	directWSConn.SetWriteDeadline(time.Time{})
+	return err
+}
+
+func startAgentListenerAndWait(agentID, listenerID string, msg Message) error {
+	ackCh := make(chan StartAgentListenerResponse, 1)
+	listenerStartAcks.Store(listenerID, ackCh)
+	defer listenerStartAcks.Delete(listenerID)
+
+	if err := sendControlMessageToAgent(agentID, msg); err != nil {
+		return err
+	}
+
+	select {
+	case ack := <-ackCh:
+		if !ack.Success {
+			if ack.Error == "" {
+				ack.Error = "agent failed to start listener"
+			}
+			return fmt.Errorf("%s", ack.Error)
+		}
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timeout waiting for agent listener confirmation")
+	}
 }
 
 func subnetContainsServerIP(subnet string) bool {
@@ -4449,13 +4488,13 @@ func handlePortForward(w http.ResponseWriter, r *http.Request) {
 		OriginalAgentID: "server",
 		TargetAgentID:   destinationAgentID,
 	}
-	if err := sendControlMessageToAgent(destinationAgentID, controlMessage); err != nil {
+	if err := startAgentListenerAndWait(destinationAgentID, listenerID, controlMessage); err != nil {
 		connLock.Lock()
 		delete(portForwards, listenerID)
 		delete(portForwardLookup, listenerKey)
 		connLock.Unlock()
-		log.Printf("Failed to send command to agent: %v", err)
-		http.Error(w, "Failed to instruct agent", http.StatusInternalServerError)
+		log.Printf("Failed to start agent listener: %v", err)
+		http.Error(w, "Failed to start agent listener: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	log.Printf(colorBoldGreen+"[+]"+colorReset+" Port forward: agent "+colorYellow+"%s"+colorReset+" :"+colorCyan+"%d"+colorReset+" -> "+colorCyan+"%s:%d"+colorReset+" (%s)", destinationAgentID, agentListenPort, destinationHost, destinationPort, protocol)
@@ -4681,6 +4720,13 @@ func handleReverseForwardConnDirect(clientConn net.Conn, targetHost string, targ
 func handleReverseForwardConn(clientConn net.Conn, agentID, targetHost string, targetPort int, listenerID string) {
 	defer clientConn.Close()
 
+	releaseSlot, err := acquireConnectSlot(agentID, targetHost, targetPort)
+	if err != nil {
+		log.Printf("Reverse forward: connect throttled for %s:%d via %s: %v", targetHost, targetPort, agentID, err)
+		return
+	}
+	defer releaseSlot()
+
 	connID := uuid.New().String()
 
 	respCh := make(chan ConnectResponse, 1)
@@ -4701,14 +4747,16 @@ func handleReverseForwardConn(clientConn net.Conn, agentID, targetHost string, t
 	}
 	if err := sendControlMessageToAgent(agentID, msg); err != nil {
 		log.Printf("Reverse forward: failed to send connect to agent %s: %v", agentID, err)
+		closePreConnAtAgent(agentID, connID)
 		return
 	}
 
 	var resp ConnectResponse
 	select {
 	case resp = <-respCh:
-	case <-time.After(10 * time.Second):
+	case <-time.After(agentConnectResponseTimeout):
 		log.Printf("Reverse forward: timeout waiting for connect_response from agent %s connID %s", agentID, connID)
+		closePreConnAtAgent(agentID, connID)
 		return
 	}
 	if !resp.Success {
@@ -4765,10 +4813,17 @@ func handleAgentFwdOpen(req AgentFwdOpen, agentID string) {
 			Payload:       p,
 			TargetAgentID: agentID,
 		}
-		sendControlMessageToAgent(agentID, m) //nolint:errcheck
+		if err := sendControlMessageToAgent(agentID, m); err != nil {
+			logVerbose("agent_fwd: failed to send ack to %s for conn %s: %v", agentID, req.ConnID, err)
+		}
 	}
 
 	targetAddr := net.JoinHostPort(req.TargetHost, fmt.Sprintf("%d", req.TargetPort))
+	if req.ClientAddr != "" {
+		logVerbose("agent_fwd: accepted client %s on %s, dialing %s (conn %s)", req.ClientAddr, agentID, targetAddr, req.ConnID)
+	} else {
+		logVerbose("agent_fwd: accepted client on %s, dialing %s (conn %s)", agentID, targetAddr, req.ConnID)
+	}
 	conn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
 	if err != nil {
 		log.Printf("agent_fwd: failed to dial %s for agent %s: %v", targetAddr, agentID, err)

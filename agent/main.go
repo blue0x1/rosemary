@@ -41,9 +41,9 @@ import (
 	"syscall"
 	"time"
 
-"github.com/gorilla/websocket"
-	"github.com/xtaci/smux"
+	"github.com/gorilla/websocket"
 	"github.com/miekg/dns"
+	"github.com/xtaci/smux"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -84,6 +84,12 @@ type StartAgentListenerMessage struct {
 	DestinationHost string `json:"destination_host"`
 	DestinationPort int    `json:"destination_port"`
 	Protocol        string `json:"protocol"`
+}
+
+type StartAgentListenerResponse struct {
+	ListenerID string `json:"listener_id"`
+	Success    bool   `json:"success"`
+	Error      string `json:"error,omitempty"`
 }
 
 type StopAgentListenerMessage struct {
@@ -141,6 +147,7 @@ type AgentFwdOpen struct {
 	ConnID     string `json:"conn_id"`
 	TargetHost string `json:"target_host"`
 	TargetPort int    `json:"target_port"`
+	ClientAddr string `json:"client_addr,omitempty"`
 }
 
 type AgentFwdAck struct {
@@ -149,7 +156,7 @@ type AgentFwdAck struct {
 	Error   string `json:"error,omitempty"`
 }
 
-var agentFwdConns  sync.Map
+var agentFwdConns sync.Map
 var agentFwdAckMap sync.Map
 
 type agentFwdConn struct {
@@ -931,7 +938,12 @@ func handleAgentClientConnection(clientConn net.Conn, destinationHost string, de
 	agentFwdAckMap.Store(connID, ackCh)
 	defer agentFwdAckMap.Delete(connID)
 
-	openMsg := AgentFwdOpen{ConnID: connID, TargetHost: destinationHost, TargetPort: destinationPort}
+	openMsg := AgentFwdOpen{
+		ConnID:     connID,
+		TargetHost: destinationHost,
+		TargetPort: destinationPort,
+		ClientAddr: clientConn.RemoteAddr().String(),
+	}
 	openPayload, _ := json.Marshal(openMsg)
 	m := Message{Type: "agent_fwd_open", Payload: openPayload, OriginalAgentID: agentAssignedID}
 	mp, _ := json.Marshal(m)
@@ -1226,14 +1238,14 @@ func cleanupAll() {
 }
 
 func main() {
-	modeFlag   := flag.String("m", "agent", "Mode: agent | agent-bind")
+	modeFlag := flag.String("m", "agent", "Mode: agent | agent-bind")
 	serverAddr := flag.String("s", "localhost:8080", "Server address (agent mode)")
-	agentKey   := flag.String("k", "", "Encryption key (base64, must match server)")
-	bindAddr   := flag.String("l", "0.0.0.0:9001", "Listen address (agent-bind mode)")
+	agentKey := flag.String("k", "", "Encryption key (base64, must match server)")
+	bindAddr := flag.String("l", "0.0.0.0:9001", "Listen address (agent-bind mode)")
 	configFlag := flag.String("c", "", "Path to JSON config file")
 	wsPathFlag := flag.String("w", "/ws", "WebSocket path (must match server)")
 	background := flag.Bool("b", false, "Run agent in background (detach from terminal)")
-	verbose    := flag.Bool("v", false, "Verbose logging")
+	verbose := flag.Bool("v", false, "Verbose logging")
 	flag.Parse()
 	if *verbose {
 		atomic.StoreInt32(&verboseMode, 1)
