@@ -259,6 +259,7 @@ func cleanupAgentConn(connID string) {
 		return true
 	})
 	for agentID := range removedSet {
+		releaseConnectSlotsForAgent(agentID)
 		purgePreConnPoolsForAgent(agentID)
 		agentLastSeenMu.Lock()
 		delete(agentLastSeen, agentID)
