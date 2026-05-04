@@ -126,6 +126,25 @@ func agentSendRaw(yamuxClient *smux.Session, conn net.Conn, writeMu *sync.Mutex,
 	return err
 }
 
+func readSmuxFrame(s *smux.Stream) ([]byte, error) {
+	defer s.Close()
+	_ = s.SetReadDeadline(time.Now().Add(10 * time.Second))
+	lenBuf := make([]byte, 4)
+	if _, err := io.ReadFull(s, lenBuf); err != nil {
+		return nil, err
+	}
+	msgLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
+	if msgLen <= 0 || msgLen > 4<<20 {
+		return nil, fmt.Errorf("invalid smux frame length %d", msgLen)
+	}
+	data := make([]byte, msgLen)
+	if _, err := io.ReadFull(s, data); err != nil {
+		return nil, err
+	}
+	_ = s.SetReadDeadline(time.Time{})
+	return data, nil
+}
+
 func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan struct{}) {
 	key, err := decodeKey(keyBase64)
 	if err != nil {
@@ -630,7 +649,12 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 						conn.Close()
 						targetConns.Delete(dataMsg.ConnID)
 					} else {
-						conn.Write(dataMsg.Data) //nolint:errcheck
+						conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+						if _, err := conn.Write(dataMsg.Data); err != nil {
+							conn.Close()
+							targetConns.Delete(dataMsg.ConnID)
+						}
+						conn.SetWriteDeadline(time.Time{})
 					}
 				} else if value, ok := udpConns.Load(dataMsg.ConnID); ok {
 					udpConn := value.(*net.UDPConn)
@@ -638,7 +662,12 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 						udpConn.Close()
 						udpConns.Delete(dataMsg.ConnID)
 					} else {
-						udpConn.Write(dataMsg.Data) //nolint:errcheck
+						udpConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+						if _, err := udpConn.Write(dataMsg.Data); err != nil {
+							udpConn.Close()
+							udpConns.Delete(dataMsg.ConnID)
+						}
+						udpConn.SetWriteDeadline(time.Time{})
 					}
 				} else if dataMsg.Close {
 					canceledConns.Store(dataMsg.ConnID, struct{}{})
@@ -792,6 +821,7 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 		go func() {
 			defer close(done)
 			if yamuxClient != nil {
+				workers := make(chan struct{}, 64)
 				for {
 					stream, err := yamuxClient.AcceptStream()
 					if err != nil {
@@ -800,22 +830,14 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 						}
 						return
 					}
-					func(s *smux.Stream) {
-						defer s.Close()
-						_ = s.SetReadDeadline(time.Now().Add(10 * time.Second))
-						lenBuf := make([]byte, 4)
-						if _, err := io.ReadFull(s, lenBuf); err != nil {
+					workers <- struct{}{}
+					go func(s *smux.Stream) {
+						defer func() { <-workers }()
+						data, err := readSmuxFrame(s)
+						if err != nil {
+							logVerbose("Agent: yamux stream read error: %v", err)
 							return
 						}
-						msgLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
-						if msgLen <= 0 || msgLen > 4<<20 {
-							return
-						}
-						data := make([]byte, msgLen)
-						if _, err := io.ReadFull(s, data); err != nil {
-							return
-						}
-						_ = s.SetReadDeadline(time.Time{})
 						dispatchWSAgentMsg(data)
 					}(stream)
 				}
@@ -1323,7 +1345,12 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 					tc.Close()
 					targetConns.Delete(dataMsg.ConnID)
 				} else {
-					tc.Write(dataMsg.Data)
+					tc.SetWriteDeadline(time.Now().Add(10 * time.Second))
+					if _, err := tc.Write(dataMsg.Data); err != nil {
+						tc.Close()
+						targetConns.Delete(dataMsg.ConnID)
+					}
+					tc.SetWriteDeadline(time.Time{})
 				}
 			} else if value, ok := udpConns.Load(dataMsg.ConnID); ok {
 				uc := value.(*net.UDPConn)
@@ -1331,7 +1358,12 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 					uc.Close()
 					udpConns.Delete(dataMsg.ConnID)
 				} else {
-					uc.Write(dataMsg.Data)
+					uc.SetWriteDeadline(time.Now().Add(10 * time.Second))
+					if _, err := uc.Write(dataMsg.Data); err != nil {
+						uc.Close()
+						udpConns.Delete(dataMsg.ConnID)
+					}
+					uc.SetWriteDeadline(time.Time{})
 				}
 			} else if dataMsg.Close {
 				canceledConns.Store(dataMsg.ConnID, struct{}{})
@@ -1490,6 +1522,7 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 	go func() {
 		defer close(done)
 		if yamuxClient != nil {
+			workers := make(chan struct{}, 64)
 			for {
 				stream, err := yamuxClient.AcceptStream()
 				if err != nil {
@@ -1498,18 +1531,12 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 					}
 					return
 				}
-				func(s *smux.Stream) {
-					defer s.Close()
-					lenBuf := make([]byte, 4)
-					if _, err := io.ReadFull(s, lenBuf); err != nil {
-						return
-					}
-					msgLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
-					if msgLen <= 0 || msgLen > 4<<20 {
-						return
-					}
-					data := make([]byte, msgLen)
-					if _, err := io.ReadFull(s, data); err != nil {
+				workers <- struct{}{}
+				go func(s *smux.Stream) {
+					defer func() { <-workers }()
+					data, err := readSmuxFrame(s)
+					if err != nil {
+						logVerbose("agent-bind: yamux stream read error: %v", err)
 						return
 					}
 					dispatchBindAgentMsg(data)
