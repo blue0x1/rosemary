@@ -213,7 +213,7 @@ Or download pre-built binaries from [Releases](https://github.com/blue0x1/rosema
 sudo rosemary
 
 # Or provide your own
-sudo rosemary -k YOUR_BASE64_KEY
+sudo rosemary -key YOUR_BASE64_KEY
 ```
 
 Dashboard available at `http://server-ip:1024`: log in with your key.
