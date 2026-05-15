@@ -133,6 +133,8 @@ func initTProxyRoutes() error {
 		}
 	}
 
+	cleanupLinuxPolicyRules()
+
 	if out, err := exec.Command("ip", "rule", "add", "fwmark", "1", "lookup", "100").CombinedOutput(); err != nil {
 		if !strings.Contains(string(out), "exists") {
 			return fmt.Errorf("failed to add ip rule: %v %s", err, out)
@@ -178,6 +180,27 @@ func initTProxyRoutes() error {
 	}
 
 	return nil
+}
+
+func cleanupLinuxPolicyRules() {
+	for i := 0; i < 32; i++ {
+		if out, err := exec.Command("ip", "rule", "del", "fwmark", "1", "lookup", "100").CombinedOutput(); err != nil {
+			if strings.Contains(string(out), "No such file") || strings.Contains(string(out), "Cannot find") {
+				break
+			}
+			break
+		}
+	}
+	for i := 0; i < 32; i++ {
+		if out, err := exec.Command("ip", "-6", "rule", "del", "fwmark", "1", "lookup", "100").CombinedOutput(); err != nil {
+			if strings.Contains(string(out), "No such file") || strings.Contains(string(out), "Cannot find") {
+				break
+			}
+			break
+		}
+	}
+	exec.Command("ip", "route", "flush", "table", "100").Run()
+	exec.Command("ip", "-6", "route", "flush", "table", "100").Run()
 }
 
 func startTransparentProxy() {
@@ -344,7 +367,7 @@ func cleanupUDP() {
 	pendingUDPConns.Range(func(key, value interface{}) bool {
 		s := value.(*udpSession)
 		if now.After(s.expire) {
-			pendingUDPConns.Delete(key)
+			deleteUDPSessionByConnID(s.connID)
 		}
 		return true
 	})
@@ -446,6 +469,8 @@ func handleUDPPacket(localConn *net.UDPConn, clientAddr *net.UDPAddr, origDst *n
 	}
 	if err := sendControlMessageToAgent(agentID, msg); err != nil {
 		logVerbose("Failed to send UDP data to agent: %v", err)
+		deleteUDPSessionByConnID(session.connID)
+		return
 	}
 	session.expire = time.Now().Add(udpTimeout)
 }
@@ -578,13 +603,23 @@ func removeIptablesRule(subnet string) error {
 	if isIPv6Subnet(subnet) {
 		ipt = "ip6tables"
 	}
-	cmd := iptCmd(ipt, "-t", "nat", "-D", "OUTPUT",
+	args := []string{"-t", "nat", "-D", "OUTPUT",
 		"-d", subnet, "-p", "tcp",
-		"-j", "REDIRECT", "--to-port", strconv.Itoa(proxyPort))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%s remove failed: %v - %s", ipt, err, output)
+		"-j", "REDIRECT", "--to-port", strconv.Itoa(proxyPort)}
+	removed := 0
+	for {
+		output, err := iptCmd(ipt, args...).CombinedOutput()
+		if err != nil {
+			if removed == 0 && !strings.Contains(string(output), "No chain/target/match") {
+				return fmt.Errorf("%s remove failed: %v - %s", ipt, err, output)
+			}
+			break
+		}
+		removed++
 	}
-	logVerbose("%s: removed TCP redirect for %s", ipt, subnet)
+	if removed > 0 {
+		logVerbose("%s: removed TCP redirect for %s (%d rule(s))", ipt, subnet, removed)
+	}
 	return nil
 }
 
@@ -608,13 +643,23 @@ func removeUdpIptablesRule(subnet string) error {
 	if isIPv6Subnet(subnet) {
 		ipt = "ip6tables"
 	}
-	cmd := iptCmd(ipt, "-t", "mangle", "-D", "OUTPUT",
+	args := []string{"-t", "mangle", "-D", "OUTPUT",
 		"-d", subnet, "-p", "udp",
-		"-j", "MARK", "--set-mark", "1")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%s MARK remove failed: %v - %s", ipt, err, output)
+		"-j", "MARK", "--set-mark", "1"}
+	removed := 0
+	for {
+		output, err := iptCmd(ipt, args...).CombinedOutput()
+		if err != nil {
+			if removed == 0 && !strings.Contains(string(output), "No chain/target/match") {
+				return fmt.Errorf("%s MARK remove failed: %v - %s", ipt, err, output)
+			}
+			break
+		}
+		removed++
 	}
-	logVerbose("%s: removed UDP MARK for %s", ipt, subnet)
+	if removed > 0 {
+		logVerbose("%s: removed UDP MARK for %s (%d rule(s))", ipt, subnet, removed)
+	}
 	return nil
 }
 
@@ -813,7 +858,6 @@ var fallbackPublicDNS = []string{"8.8.8.8", "1.1.1.1", "8.8.4.4"}
 
 func queryFallbackDNS(domain string, qtype uint16) *DNSResponseMessage {
 	tryServer := func(server string) *DNSResponseMessage {
-		// Use TCP so the query bypasses the UDP-only iptables DNS redirect rule.
 		c := &dns.Client{Net: "tcp", Timeout: 3 * time.Second}
 		msg := new(dns.Msg)
 		msg.SetQuestion(domain, qtype)
@@ -996,27 +1040,98 @@ func queryEgressDNS(domain string, qtype uint16) *DNSResponseMessage {
 	return nil
 }
 
-func addDNSRedirectRule() error {
-	cmd := iptCmd("iptables", "-t", "nat", "-A", "OUTPUT",
-		"-p", "udp", "--dport", "53",
-		"-j", "REDIRECT", "--to-port", strconv.Itoa(dnsLocalPort))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to add DNS redirect rule: %v - %s", err, out)
+type dnsRedirectBackend struct {
+	bin      string
+	optional bool
+}
+
+func dnsRedirectBackends() []dnsRedirectBackend {
+	return []dnsRedirectBackend{
+		{bin: "iptables"},
+		{bin: "ip6tables", optional: true},
 	}
-	logVerbose("iptables: added DNS redirect (UDP 53 -> %d)", dnsLocalPort)
+}
+
+func dnsRedirectRule(proto, target string) []string {
+	return []string{
+		"-t", "nat", target, "OUTPUT",
+		"-p", proto, "--dport", "53",
+		"-j", "REDIRECT", "--to-port", strconv.Itoa(dnsLocalPort),
+	}
+}
+
+func dnsOwnerBypassRule(proto, target string) []string {
+	return []string{
+		"-t", "nat", target, "OUTPUT",
+		"-p", proto, "--dport", "53",
+		"-m", "owner", "--uid-owner", strconv.Itoa(os.Geteuid()),
+		"-j", "RETURN",
+	}
+}
+
+func removeDNSRule(bin string, args []string) (int, error) {
+	removed := 0
+	for {
+		out, err := iptCmd(bin, args...).CombinedOutput()
+		if err != nil {
+			if removed == 0 && !strings.Contains(string(out), "No chain/target/match") {
+				return removed, fmt.Errorf("%s: %v - %s", bin, err, out)
+			}
+			break
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+func addDNSRedirectRule() error {
+	_ = removeDNSRedirectRule()
+	for _, backend := range dnsRedirectBackends() {
+		for _, proto := range []string{"udp", "tcp"} {
+			if out, err := iptCmd(backend.bin, dnsOwnerBypassRule(proto, "-A")...).CombinedOutput(); err != nil {
+				if backend.optional {
+					logVerbose("Warning: failed to add %s DNS %s owner bypass: %v - %s", backend.bin, proto, err, out)
+					continue
+				}
+				return fmt.Errorf("failed to add DNS %s owner bypass: %v - %s", proto, err, out)
+			}
+			if out, err := iptCmd(backend.bin, dnsRedirectRule(proto, "-A")...).CombinedOutput(); err != nil {
+				if backend.optional {
+					logVerbose("Warning: failed to add %s DNS %s redirect rule: %v - %s", backend.bin, proto, err, out)
+					continue
+				}
+				return fmt.Errorf("failed to add DNS %s redirect rule: %v - %s", proto, err, out)
+			}
+		}
+	}
+	logVerbose("iptables: added DNS redirect (TCP/UDP 53 -> %d)", dnsLocalPort)
 	return nil
 }
 
 func removeDNSRedirectRule() error {
-	cmd := iptCmd("iptables", "-t", "nat", "-D", "OUTPUT",
-		"-p", "udp", "--dport", "53",
-		"-j", "REDIRECT", "--to-port", strconv.Itoa(dnsLocalPort))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		if !strings.Contains(string(out), "No chain/target/match") {
-			return fmt.Errorf("failed to remove DNS redirect rule: %v - %s", err, out)
+	for _, backend := range dnsRedirectBackends() {
+		for _, proto := range []string{"udp", "tcp"} {
+			removedRedirect, err := removeDNSRule(backend.bin, dnsRedirectRule(proto, "-D"))
+			if err != nil {
+				if backend.optional {
+					logVerbose("Warning: failed to remove %s DNS %s redirect rule: %v", backend.bin, proto, err)
+				} else {
+					return fmt.Errorf("failed to remove DNS %s redirect rule: %v", proto, err)
+				}
+			}
+			removedBypass, err := removeDNSRule(backend.bin, dnsOwnerBypassRule(proto, "-D"))
+			if err != nil {
+				if backend.optional {
+					logVerbose("Warning: failed to remove %s DNS %s owner bypass: %v", backend.bin, proto, err)
+				} else {
+					return fmt.Errorf("failed to remove DNS %s owner bypass: %v", proto, err)
+				}
+			}
+			if removedRedirect+removedBypass > 0 {
+				logVerbose("%s: removed DNS %s rules (%d redirect, %d bypass)", backend.bin, proto, removedRedirect, removedBypass)
+			}
 		}
 	}
-	logVerbose("iptables: removed DNS redirect rule")
 	return nil
 }
 
@@ -1551,13 +1666,23 @@ func removeIcmpIptablesRule(subnet string) error {
 	if isIPv6Subnet(subnet) {
 		return nil
 	}
-	cmd := iptCmd("iptables", "-t", "mangle", "-D", "OUTPUT",
+	args := []string{"-t", "mangle", "-D", "OUTPUT",
 		"-d", subnet, "-p", "icmp", "--icmp-type", "echo-request",
-		"-j", "MARK", "--set-mark", "1")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("iptables ICMP MARK remove failed: %v - %s", err, output)
+		"-j", "MARK", "--set-mark", "1"}
+	removed := 0
+	for {
+		output, err := iptCmd("iptables", args...).CombinedOutput()
+		if err != nil {
+			if removed == 0 && !strings.Contains(string(output), "No chain/target/match") {
+				return fmt.Errorf("iptables ICMP MARK remove failed: %v - %s", err, output)
+			}
+			break
+		}
+		removed++
 	}
-	logVerbose("iptables: removed ICMP MARK for %s", subnet)
+	if removed > 0 {
+		logVerbose("iptables: removed ICMP MARK for %s (%d rule(s))", subnet, removed)
+	}
 	return nil
 }
 

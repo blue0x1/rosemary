@@ -284,6 +284,8 @@ func tuneBSDUDPBuffers() {
 	}
 }
 
+func cleanupLinuxPolicyRules() {}
+
 func initTransparentMode() error {
 
 	tuneBSDUDPBuffers()
@@ -918,6 +920,8 @@ func handleUDPPacket(localConn *net.UDPConn, clientAddr *net.UDPAddr, origDst *n
 	}
 	if err := sendControlMessageToAgent(agentID, msg); err != nil {
 		log.Printf("Failed to send UDP data to agent: %v", err)
+		deleteUDPSessionByConnID(session.connID)
+		return
 	}
 	session.expire = time.Now().Add(udpTimeout)
 }
@@ -927,7 +931,7 @@ func cleanupUDP() {
 	pendingUDPConns.Range(func(key, value interface{}) bool {
 		s := value.(*udpSession)
 		if now.After(s.expire) {
-			pendingUDPConns.Delete(key)
+			deleteUDPSessionByConnID(s.connID)
 		}
 		return true
 	})

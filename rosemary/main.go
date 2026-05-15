@@ -949,7 +949,7 @@ const (
 	udpTimeout     = 60 * time.Second
 
 	agentConnectResponseTimeout = 30 * time.Second
-	agentStaleTimeout           = 35 * time.Second
+	agentStaleTimeout           = 2 * time.Minute
 )
 
 type pendingConn struct {
@@ -998,6 +998,24 @@ type udpSession struct {
 	agentID    string
 	connID     string
 	expire     time.Time
+}
+
+func deleteUDPSessionByConnID(connID string) {
+	pendingUDPConns.Range(func(key, value interface{}) bool {
+		if session, ok := value.(*udpSession); ok && session.connID == connID {
+			pendingUDPConns.Delete(key)
+		}
+		return true
+	})
+}
+
+func deleteUDPSessionsForAgent(agentID string) {
+	pendingUDPConns.Range(func(key, value interface{}) bool {
+		if session, ok := value.(*udpSession); ok && session.agentID == agentID {
+			pendingUDPConns.Delete(key)
+		}
+		return true
+	})
 }
 
 type DNSRequestMessage struct {
@@ -3281,6 +3299,9 @@ func cleanupAll() {
 		if err := reloadDefaultEgressRules(); err != nil {
 			log.Printf("Warning: failed to remove egress rules on shutdown: %v", err)
 		}
+	}
+	if runtime.GOOS == "linux" {
+		cleanupLinuxPolicyRules()
 	}
 
 	stopDNSProxy()

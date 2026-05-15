@@ -817,46 +817,102 @@ func tcpPing(ipStr string, timeout time.Duration) (bool, time.Duration) {
 
 var publicDNSServers = []string{"8.8.8.8:53", "1.1.1.1:53", "8.8.4.4:53"}
 
-func queryPublicDNS(domain string, qtype uint16) []DNSAnswer {
+func answersFromDNSResponse(resp *dns.Msg, qtype uint16) []DNSAnswer {
+	var answers []DNSAnswer
+	for _, rr := range resp.Answer {
+		hdr := rr.Header()
+		ans := DNSAnswer{Name: hdr.Name, Type: hdr.Rrtype, TTL: hdr.Ttl}
+		switch v := rr.(type) {
+		case *dns.A:
+			if qtype == dns.TypeA || qtype == dns.TypeANY {
+				ans.Data = v.A.String()
+			}
+		case *dns.AAAA:
+			if qtype == dns.TypeAAAA || qtype == dns.TypeANY {
+				ans.Data = v.AAAA.String()
+			}
+		case *dns.CNAME:
+			ans.Data = v.Target
+		default:
+			continue
+		}
+		if ans.Data != "" {
+			answers = append(answers, ans)
+		}
+	}
+	return answers
+}
+
+func queryDNSServers(domain string, qtype uint16, servers []string) []DNSAnswer {
 	msg := new(dns.Msg)
 	msg.SetQuestion(domain, qtype)
 	msg.RecursionDesired = true
 
-	for _, server := range publicDNSServers {
+	for _, server := range servers {
+		if server == "" {
+			continue
+		}
+		server = strings.TrimSpace(server)
+		if _, _, err := net.SplitHostPort(server); err != nil {
+			server = net.JoinHostPort(strings.Trim(server, "[] "), "53")
+		}
 		for _, net := range []string{"tcp", "udp"} {
 			c := &dns.Client{Net: net, Timeout: 3 * time.Second}
 			resp, _, err := c.Exchange(msg, server)
 			if err != nil || resp == nil || resp.Rcode != dns.RcodeSuccess {
 				continue
 			}
-			var answers []DNSAnswer
-			for _, rr := range resp.Answer {
-				hdr := rr.Header()
-				ans := DNSAnswer{Name: hdr.Name, Type: hdr.Rrtype, TTL: hdr.Ttl}
-				switch v := rr.(type) {
-				case *dns.A:
-					if qtype == dns.TypeA || qtype == dns.TypeANY {
-						ans.Data = v.A.String()
-					}
-				case *dns.AAAA:
-					if qtype == dns.TypeAAAA || qtype == dns.TypeANY {
-						ans.Data = v.AAAA.String()
-					}
-				case *dns.CNAME:
-					ans.Data = v.Target
-				default:
-					continue
-				}
-				if ans.Data != "" {
-					answers = append(answers, ans)
-				}
-			}
-			if len(answers) > 0 {
+			if answers := answersFromDNSResponse(resp, qtype); len(answers) > 0 {
 				return answers
 			}
 		}
 	}
 	return nil
+}
+
+func queryPublicDNS(domain string, qtype uint16) []DNSAnswer {
+	return queryDNSServers(domain, qtype, publicDNSServers)
+}
+
+func systemDNSServers() []string {
+	seen := make(map[string]bool)
+	var servers []string
+	add := func(s string) {
+		ip := net.ParseIP(strings.TrimSpace(s))
+		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+			return
+		}
+		key := ip.String()
+		if !seen[key] {
+			seen[key] = true
+			servers = append(servers, key)
+		}
+	}
+	if runtime.GOOS == "windows" {
+		if out, err := exec.Command("powershell", "-NoProfile", "-Command", "Get-DnsClientServerAddress -AddressFamily IPv4 | ForEach-Object { $_.ServerAddresses }").Output(); err == nil {
+			for _, field := range strings.Fields(string(out)) {
+				add(field)
+			}
+		}
+		if len(servers) == 0 {
+			if out, err := exec.Command("ipconfig", "/all").Output(); err == nil {
+				re := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+				for _, m := range re.FindAllString(string(out), -1) {
+					add(m)
+				}
+			}
+		}
+		return servers
+	}
+	if b, err := os.ReadFile("/etc/resolv.conf"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[0] == "nameserver" {
+				add(fields[1])
+			}
+		}
+	}
+	return servers
 }
 
 func handleAgentDNSRequest(agentID string, msg DNSRequestMessage, sendEnc func([]byte) error) {
@@ -889,7 +945,14 @@ func handleAgentDNSRequest(agentID string, msg DNSRequestMessage, sendEnc func([
 	}
 
 	if len(answers) == 0 {
-		logVerbose("Agent: system resolver failed for %s, trying public DNS", domain)
+		if servers := systemDNSServers(); len(servers) > 0 {
+			logVerbose("Agent: system resolver failed for %s, trying configured DNS servers %v", domain, servers)
+			answers = queryDNSServers(msg.Domain, msg.QType, servers)
+		}
+	}
+
+	if len(answers) == 0 {
+		logVerbose("Agent: configured DNS failed for %s, trying public DNS", domain)
 		if pub := queryPublicDNS(msg.Domain, msg.QType); len(pub) > 0 {
 			logVerbose("Agent: public DNS resolved %s (%d answers)", domain, len(pub))
 			answers = pub

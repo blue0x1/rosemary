@@ -44,7 +44,8 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
-func tuneBSDUDPBuffers() {}
+func tuneBSDUDPBuffers()       {}
+func cleanupLinuxPolicyRules() {}
 
 // WinDivert.dll and WinDivert64.sys must be present at build time.
 // Download from https://reqrypt.org/windivert.html (v2.x, 64-bit).
@@ -756,7 +757,7 @@ func cleanupUDP() {
 	pendingUDPConns.Range(func(key, value interface{}) bool {
 		s := value.(*udpSession)
 		if now.After(s.expire) {
-			pendingUDPConns.Delete(key)
+			deleteUDPSessionByConnID(s.connID)
 		}
 		return true
 	})
@@ -821,6 +822,8 @@ func handleUDPPacket(_ *net.UDPConn, clientAddr *net.UDPAddr, origDst *net.UDPAd
 		TargetAgentID: agentID,
 	}); err != nil {
 		logVerbose("UDP data to agent: %v", err)
+		deleteUDPSessionByConnID(session.connID)
+		return
 	}
 	session.expire = time.Now().Add(udpTimeout)
 }

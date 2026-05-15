@@ -197,13 +197,8 @@ func cleanupAgentConn(connID string) {
 		}
 		return true
 	})
-	pendingUDPConns.Range(func(key, value interface{}) bool {
-		if session, ok := value.(*udpSession); ok && removedSet[session.agentID] {
-			pendingUDPConns.Delete(key)
-		}
-		return true
-	})
 	for agentID := range removedSet {
+		deleteUDPSessionsForAgent(agentID)
 		releaseConnectSlotsForAgent(agentID)
 		purgePreConnPoolsForAgent(agentID)
 		agentLastSeenMu.Lock()
@@ -220,6 +215,9 @@ func relayConnMsg(msg Message, actualSourceAgentID string) {
 }
 
 func dispatchConnMsg(msg Message, sourceID string, agentIP string, connID *string) {
+	if msg.Type != "register" && sourceID != "" {
+		markAgentSeen(sourceID)
+	}
 	switch msg.Type {
 	case "register":
 		handleMsgRegisterWS(msg, sourceID, agentIP, connID)
@@ -252,6 +250,9 @@ func dispatchConnMsg(msg Message, sourceID string, agentIP string, connID *strin
 
 // dispatchBindMsg handles a message from a TCP bind-connected agent.
 func dispatchBindMsg(msg Message, sourceID string, agentIP string, connID *string) {
+	if msg.Type != "register" && sourceID != "" {
+		markAgentSeen(sourceID)
+	}
 	switch msg.Type {
 	case "register":
 		handleMsgRegisterBind(msg, sourceID, agentIP, connID)
@@ -499,6 +500,10 @@ func applySubnetRules(subnet, agentIP string) {
 	}
 	if !isValidCIDR(subnet) {
 		log.Printf("Invalid subnet format '%s' received from agent. Skipping iptables rules.", subnet)
+		return
+	}
+	if runtime.GOOS == "linux" && routeExistsForSubnet(subnet) {
+		log.Printf("Skipping transparent rules for %s: exact kernel route already exists", subnet)
 		return
 	}
 	// If the agent reconnected within the grace period the rules are still
@@ -784,7 +789,7 @@ func handleMsgData(msg Message) {
 	} else if value, ok := pendingUDPConns.Load(dataMsg.ConnID); ok {
 		s := value.(*udpSession)
 		if dataMsg.Close {
-			pendingUDPConns.Delete(dataMsg.ConnID)
+			deleteUDPSessionByConnID(dataMsg.ConnID)
 		} else if udpListener != nil && s.clientAddr != nil {
 			sendUDPResponse(s.clientAddr, s.remoteAddr.IP, s.remoteAddr.Port, dataMsg.Data)
 			s.expire = time.Now().Add(udpTimeout)

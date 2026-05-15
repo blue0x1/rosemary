@@ -28,7 +28,8 @@ import (
 	"syscall"
 )
 
-func tuneBSDUDPBuffers() {}
+func tuneBSDUDPBuffers()       {}
+func cleanupLinuxPolicyRules() {}
 
 var (
 	proxyPort    = 1080
