@@ -265,7 +265,28 @@ func removePFRule() error {
 	return nil
 }
 
+func tuneBSDUDPBuffers() {
+	if runtime.GOOS != "freebsd" {
+		return
+	}
+	settings := []string{
+		"kern.ipc.maxsockbuf=16777216",
+		"net.inet.udp.recvspace=7340032",
+		"net.inet.udp.maxdgram=65535",
+	}
+	for _, kv := range settings {
+		out, err := exec.Command("sysctl", "-w", kv).CombinedOutput()
+		if err != nil {
+			log.Printf("Warning: sysctl %s: %v %s", kv, err, strings.TrimSpace(string(out)))
+			continue
+		}
+		logVerbose("BSD UDP buffer tuning applied: %s", strings.TrimSpace(string(out)))
+	}
+}
+
 func initTransparentMode() error {
+
+	tuneBSDUDPBuffers()
 
 	if err := enablePF(); err != nil {
 		return fmt.Errorf("failed to initialize packet filter: %v", err)
@@ -802,6 +823,12 @@ func handleProxyConnection(localConn net.Conn) {
 }
 
 func handleUDPPacket(localConn *net.UDPConn, clientAddr *net.UDPAddr, origDst *net.UDPAddr, data []byte) {
+	if shouldRejectUDPEgress(origDst) {
+		logUDPFallbackRateLimited(origDst.Port, origDst.IP)
+		sendUDPPortUnreachable(clientAddr.IP, origDst)
+		return
+	}
+
 	agentID, ok := routingTable.FindAgentForIP(origDst.IP)
 	if !ok {
 		egress := getDefaultEgressAgent()
@@ -868,7 +895,7 @@ func handleUDPPacket(localConn *net.UDPConn, clientAddr *net.UDPAddr, origDst *n
 				pendingUDPConns.Delete(connID)
 				return
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(agentConnectResponseTimeout):
 			logVerbose("Timeout waiting for UDP connect_response from agent %s connID %s", agentID, connID)
 			closePreConnAtAgent(agentID, connID)
 			respChanMap.Delete(connID)
@@ -3267,19 +3294,21 @@ func listSocksProxies(out *strings.Builder) {
 	socksMu.Lock()
 	defer socksMu.Unlock()
 
-	fmt.Fprintln(out, "\nSOCKS5 Servers (Proxy Pivots):")
-	fmt.Fprintln(out, "ID              Port  Agent        Conns  Uptime")
-	fmt.Fprintln(out, strings.Repeat("-", 60))
+	if len(socksProxies) == 0 {
+		fmt.Fprintln(out, "No SOCKS5 proxies.")
+		return
+	}
 
+	cols := []consoleColumn{{"ID", 14}, {"Port", 8}, {"Agent", 14}, {"Conns", 6}, {"Uptime", 14}}
+	tableHeader(out, cols)
 	for id, proxy := range socksProxies {
 		uptime := time.Since(proxy.StartTime).Truncate(time.Second).String()
-		fmt.Fprintf(out, "%-14s %s  %-12s %d    %s\n",
-			id,
+		tableColorRow(out, cols,
+			colorDim+id+colorReset,
 			fmt.Sprintf(":%d", proxy.LocalPort),
-			proxy.AgentID,
-			proxy.Connections,
-			uptime,
-		)
+			colorCyan+proxy.AgentID+colorReset,
+			fmt.Sprintf("%d", proxy.Connections),
+			uptime)
 	}
 }
 

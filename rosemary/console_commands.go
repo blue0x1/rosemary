@@ -18,6 +18,11 @@ import (
 
 type consoleCmdFn func(parts []string, out *strings.Builder)
 
+type consoleColumn struct {
+	Title string
+	Width int
+}
+
 var consoleCmds = map[string]consoleCmdFn{
 	"help":        consoleCmdHelp,
 	"agents":      consoleCmdAgents,
@@ -46,6 +51,77 @@ var consoleCmds = map[string]consoleCmdFn{
 	"token":       consoleCmdToken,
 	"tag":         consoleCmdTag,
 	"clear":       consoleCmdClear,
+}
+
+func tableHeader(out *strings.Builder, cols []consoleColumn) {
+	for i, col := range cols {
+		if i > 0 {
+			out.WriteString("  ")
+		}
+		out.WriteString(colorBoldWhite)
+		out.WriteString(fitColumn(col.Title, col.Width))
+		out.WriteString(strings.Repeat(" ", maxInt(col.Width-len([]rune(fitColumn(col.Title, col.Width))), 0)))
+		out.WriteString(colorReset)
+	}
+	out.WriteString("\n")
+	for i, col := range cols {
+		if i > 0 {
+			out.WriteString("  ")
+		}
+		out.WriteString(colorDim)
+		out.WriteString(strings.Repeat("-", col.Width))
+		out.WriteString(colorReset)
+	}
+	out.WriteString("\n")
+}
+
+func tableRow(out *strings.Builder, cols []consoleColumn, values ...string) {
+	for i, col := range cols {
+		if i > 0 {
+			out.WriteString("  ")
+		}
+		value := ""
+		if i < len(values) {
+			value = values[i]
+		}
+		out.WriteString(padColumn(value, col.Width))
+	}
+	out.WriteString("\n")
+}
+
+func tableColorRow(out *strings.Builder, cols []consoleColumn, values ...string) {
+	for i, col := range cols {
+		if i > 0 {
+			out.WriteString("  ")
+		}
+		value := ""
+		if i < len(values) {
+			value = values[i]
+		}
+		out.WriteString(padColorColumn(value, col.Width))
+	}
+	out.WriteString("\n")
+}
+
+func padColumn(s string, width int) string {
+	fit := fitColumn(s, width)
+	return fit + strings.Repeat(" ", maxInt(width-len([]rune(fit)), 0))
+}
+
+func padColorColumn(s string, width int) string {
+	plain := stripANSI(s)
+	fitPlain := fitColumn(plain, width)
+	if fitPlain != plain {
+		return fitPlain + strings.Repeat(" ", maxInt(width-len([]rune(fitPlain)), 0))
+	}
+	return s + strings.Repeat(" ", maxInt(width-len([]rune(plain)), 0))
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func consoleCmdHelp(parts []string, out *strings.Builder) {
@@ -154,8 +230,16 @@ func consoleCmdAgents(parts []string, out *strings.Builder) {
 		return
 	}
 
-	out.WriteString(colorBoldWhite + fmt.Sprintf("%-14s %-8s %-22s %-22s %-12s %-10s %-8s\n",
-		"ID", "OS", "Hostname", "Subnets", "Username", "LastSeen", "Internet") + colorReset)
+	cols := []consoleColumn{
+		{"ID", 14},
+		{"OS", 8},
+		{"Hostname", 22},
+		{"Subnets", 24},
+		{"Username", 24},
+		{"Last Seen", 10},
+		{"Internet", 8},
+	}
+	tableHeader(out, cols)
 	for id, info := range connections {
 		subnets := "None"
 		if len(info.Subnets) == 1 {
@@ -167,10 +251,29 @@ func consoleCmdAgents(parts []string, out *strings.Builder) {
 		if info.HasInternet {
 			internet = "Yes"
 		}
-		out.WriteString(fmt.Sprintf("%s%-14s%s %-8s %-22s %-22s %-12s %-10s %-8s\n",
-			colorCyan, id, colorReset,
-			info.OS, info.Hostname, subnets, info.Username, info.LastSeen.Format("15:04:05"), internet))
+		tableColorRow(out, cols,
+			colorCyan+id+colorReset,
+			info.OS,
+			info.Hostname,
+			subnets,
+			info.Username,
+			info.LastSeen.Format("15:04:05"),
+			internet)
 	}
+}
+
+func fitColumn(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	rs := []rune(s)
+	if len(rs) <= width {
+		return s
+	}
+	if width == 1 {
+		return "~"
+	}
+	return string(rs[:width-1]) + "~"
 }
 
 func consoleCmdTag(parts []string, out *strings.Builder) {
@@ -271,8 +374,8 @@ func consoleCmdRoutesList(out *strings.Builder) {
 	if len(routingTable.routes) == 0 {
 		out.WriteString(colorYellow + "No routes." + colorReset + "\n")
 	} else {
-		out.WriteString(colorBoldWhite + fmt.Sprintf("%-22s  %-20s  %s", "Subnet", "Agent", "State") + colorReset + "\n")
-		out.WriteString(colorDim + fmt.Sprintf("%-22s  %-20s  %s", "----------------------", "--------------------", "-------") + colorReset + "\n")
+		cols := []consoleColumn{{"Subnet", 24}, {"Agent", 18}, {"State", 10}}
+		tableHeader(out, cols)
 		for subnet, agentID := range routingTable.routes {
 			disabledSubnetsMu.Lock()
 			state := colorGreen + "enabled" + colorReset
@@ -280,10 +383,10 @@ func consoleCmdRoutesList(out *strings.Builder) {
 				state = colorBoldRed + "DISABLED" + colorReset
 			}
 			disabledSubnetsMu.Unlock()
-			out.WriteString(fmt.Sprintf("%s%-22s%s  %s%-20s%s  %s\n",
-				colorYellow, subnet, colorReset,
-				colorCyan, agentID, colorReset,
-				state))
+			tableColorRow(out, cols,
+				colorYellow+subnet+colorReset,
+				colorCyan+agentID+colorReset,
+				state)
 		}
 	}
 	routingTable.RUnlock()
@@ -434,14 +537,19 @@ func consoleCmdForwards(parts []string, out *strings.Builder) {
 	if len(portForwards) == 0 {
 		out.WriteString(colorYellow + "No port forwards." + colorReset + "\n")
 	} else {
-		out.WriteString(colorBoldWhite + "ID\t\tPort\tTarget" + colorReset + "\n")
+		cols := []consoleColumn{{"ID", 36}, {"Port", 8}, {"Proto", 6}, {"Target", 28}, {"Agent", 14}}
+		tableHeader(out, cols)
 		for id, pf := range portForwards {
-			out.WriteString(fmt.Sprintf(
-				"%s%s%s\t%s%d%s\t%s:%d via %s%s%s\n",
-				colorDim, id, colorReset,
-				colorYellow, pf.AgentListenPort, colorReset,
-				pf.DestinationHost, pf.DestinationPort,
-				colorCyan, pf.DestinationAgentID, colorReset))
+			proto := pf.Protocol
+			if proto == "" {
+				proto = "tcp"
+			}
+			tableColorRow(out, cols,
+				colorDim+id+colorReset,
+				colorYellow+strconv.Itoa(pf.AgentListenPort)+colorReset,
+				colorGreen+proto+colorReset,
+				fmt.Sprintf("%s:%d", pf.DestinationHost, pf.DestinationPort),
+				colorCyan+pf.DestinationAgentID+colorReset)
 		}
 	}
 	connLock.Unlock()
@@ -555,14 +663,15 @@ func consoleCmdDisconnectAll(out *strings.Builder) {
 		if !stillHere {
 			continue
 		}
-		if directWS, ok := directConnections[info.DirectWSConnID]; ok {
-			directWS.Close()
-			delete(directConnections, info.DirectWSConnID)
+		if rs, ok := rtnSinks[info.DirectWSConnID]; ok {
+			go rs.close()
+			delete(rtnSinks, info.DirectWSConnID)
 		}
-		if sess, ok := yamuxSessions[id]; ok {
-			sess.Close()
-			delete(yamuxSessions, id)
+		if bc, ok := bindConns[info.DirectWSConnID]; ok {
+			bc.Close()
+			delete(bindConns, info.DirectWSConnID)
 		}
+		delete(bindWriteMus, info.DirectWSConnID)
 		delete(connections, id)
 	}
 	connLock.Unlock()
@@ -580,10 +689,14 @@ func consoleCmdDisconnectOne(agentID string, out *strings.Builder) {
 	disconnectMsg := Message{Type: "disconnect", Payload: []byte(`{}`), TargetAgentID: agentID}
 	_ = sendControlMessageToAgent(agentID, disconnectMsg)
 	connLock.Lock()
-	directWS, wsOk := directConnections[agentInfo.DirectWSConnID]
+	rs, rsOk := rtnSinks[agentInfo.DirectWSConnID]
+	bc, bindOk := bindConns[agentInfo.DirectWSConnID]
 	connLock.Unlock()
-	if wsOk {
-		directWS.Close()
+	if rsOk {
+		go rs.close()
+	}
+	if bindOk {
+		bc.Close()
 	}
 	out.WriteString(fmt.Sprintf(colorBoldGreen+"[+]"+colorReset+" Disconnect initiated for %s%s%s\n", colorCyan, agentID, colorReset))
 }
@@ -942,13 +1055,14 @@ func consoleCmdRForward(parts []string, out *strings.Builder) {
 		if len(reverseForwards) == 0 {
 			out.WriteString(colorYellow + "No active reverse forwards." + colorReset + "\n")
 		} else {
-			out.WriteString(colorBoldWhite + fmt.Sprintf("%-36s  %-10s  %-15s  %-20s", "ID", "Port", "Agent", "Target") + colorReset + "\n")
+			cols := []consoleColumn{{"ID", 36}, {"Port", 8}, {"Agent", 14}, {"Target", 28}}
+			tableHeader(out, cols)
 			for _, rf := range reverseForwards {
-				out.WriteString(fmt.Sprintf("%s%-36s%s  %s:%-9d%s  %s%-15s%s  %s:%d\n",
-					colorDim, rf.ListenerID, colorReset,
-					colorYellow, rf.ListenPort, colorReset,
-					colorCyan, rf.AgentID, colorReset,
-					rf.TargetHost, rf.TargetPort))
+				tableColorRow(out, cols,
+					colorDim+rf.ListenerID+colorReset,
+					colorYellow+strconv.Itoa(rf.ListenPort)+colorReset,
+					colorCyan+rf.AgentID+colorReset,
+					fmt.Sprintf("%s:%d", rf.TargetHost, rf.TargetPort))
 			}
 		}
 		reverseForwardsLock.Unlock()
@@ -1051,11 +1165,15 @@ scanWait:
 func consoleCmdConnect(parts []string, out *strings.Builder) {
 	args := parts[1:]
 	if len(args) < 1 {
-		out.WriteString(colorBoldCyan + "Usage: " + colorReset + colorGreen + "connect <ip:port>\n" + colorReset)
+		out.WriteString(colorBoldCyan + "Usage: " + colorReset + colorGreen + "connect <ip:port>  or  connect <ip> <port>\n" + colorReset)
 		return
 	}
-	go connectCliToBindAgent(args[0])
-	out.WriteString(fmt.Sprintf(colorBoldCyan+"[*]"+colorReset+" Connecting to bind agent at %s%s%s...\n", colorYellow, args[0], colorReset))
+	addr := args[0]
+	if len(args) >= 2 && !strings.Contains(addr, ":") {
+		addr = addr + ":" + args[1]
+	}
+	go connectCliToBindAgent(addr)
+	out.WriteString(fmt.Sprintf(colorBoldCyan+"[*]"+colorReset+" Connecting to bind agent at %s%s%s...\n", colorYellow, addr, colorReset))
 }
 
 func consoleCmdLoadConfig(parts []string, out *strings.Builder) {
@@ -1146,15 +1264,14 @@ func consoleCmdTokenList(out *strings.Builder) {
 	if len(apiTokens) == 0 {
 		out.WriteString("No tokens.\n")
 	} else {
-		out.WriteString(fmt.Sprintf("%-10s  %-24s  %-12s  %s\n", "ID", "Name", "Perms", "Last Used"))
-		out.WriteString(fmt.Sprintf("%-10s  %-24s  %-12s  %s\n", "----------", "------------------------", "------------", "---------"))
+		cols := []consoleColumn{{"ID", 10}, {"Name", 24}, {"Permissions", 16}, {"Last Used", 16}}
+		tableHeader(out, cols)
 		for _, tok := range apiTokens {
 			lastUsed := "never"
 			if !tok.LastUsedAt.IsZero() && tok.LastUsedAt.Year() > 1 {
 				lastUsed = tok.LastUsedAt.Format("2006-01-02 15:04")
 			}
-			out.WriteString(fmt.Sprintf("%-10s  %-24s  %-12s  %s\n",
-				tok.ID, tok.Name, strings.Join(tok.Permissions, ","), lastUsed))
+			tableRow(out, cols, tok.ID, tok.Name, strings.Join(tok.Permissions, ","), lastUsed)
 		}
 	}
 	apiTokensMu.RUnlock()

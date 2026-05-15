@@ -1,23 +1,16 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"net/http"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
-	"github.com/xtaci/smux"
-	"golang.org/x/time/rate"
 )
 
 type recentAgentID struct {
@@ -59,57 +52,6 @@ func reclaimRecentAgentID(registerMsg RegisterMessage) (string, bool) {
 }
 
 // authenticateWSAgent performs the challenge-response authentication handshake.
-func authenticateWSAgent(ws *websocket.Conn, agentIP string) bool {
-	nonce := make([]byte, 16)
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		logError("Auth: nonce generation failed: %v", err)
-		return false
-	}
-	challengePayload, _ := json.Marshal(map[string]string{
-		"nonce": base64.URLEncoding.EncodeToString(nonce),
-	})
-	challengeMsg := Message{Type: "auth_challenge", Payload: json.RawMessage(challengePayload)}
-	challengeJSON, _ := json.Marshal(challengeMsg)
-	enc, err := encrypt(challengeJSON, getEncryptionKey())
-	if err != nil {
-		return false
-	}
-	ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	if err := ws.WriteMessage(websocket.BinaryMessage, enc); err != nil {
-		logWarn("Auth: challenge send failed to %s: %v", agentIP, err)
-		return false
-	}
-	ws.SetWriteDeadline(time.Time{})
-
-	ws.SetReadDeadline(time.Now().Add(10 * time.Second))
-	_, rawResp, err := ws.ReadMessage()
-	ws.SetReadDeadline(time.Time{})
-	if err != nil {
-		if !isNormalCloseError(err) {
-			logWarn("Auth: no response from %s: %v", agentIP, err)
-		}
-		return false
-	}
-	plain, err := decrypt(rawResp, getEncryptionKey())
-	if err != nil {
-		logWarn("Auth: wrong key from %s", agentIP)
-		return false
-	}
-	var respMsg Message
-	if err := json.Unmarshal(plain, &respMsg); err != nil || respMsg.Type != "auth_response" {
-		logWarn("Auth: bad response from %s", agentIP)
-		return false
-	}
-	var respPayload map[string]string
-	if err := json.Unmarshal(respMsg.Payload, &respPayload); err != nil ||
-		respPayload["nonce"] != base64.URLEncoding.EncodeToString(nonce) {
-		logWarn("Auth: nonce mismatch from %s", agentIP)
-		return false
-	}
-	logDebug("Auth: agent from %s authenticated", agentIP)
-	return true
-}
-
 // cleanupAgentConn removes all state for a disconnected agent connection.
 func cleanupAgentConn(connID string) {
 	connLock.Lock()
@@ -189,12 +131,15 @@ func cleanupAgentConn(connID string) {
 	for agentID, fwds := range savedByAgent {
 		recentForwardsByAgent.Store(agentID, fwds)
 	}
-	delete(directConnections, connID)
-	delete(wsWriteMus, connID)
-	if sess, ok := yamuxSessions[connID]; ok {
-		sess.Close()
-		delete(yamuxSessions, connID)
+	if rs, ok := rtnSinks[connID]; ok {
+		go rs.close()
+		delete(rtnSinks, connID)
 	}
+	if bc, ok := bindConns[connID]; ok {
+		bc.Close()
+		delete(bindConns, connID)
+	}
+	delete(bindWriteMus, connID)
 	connLock.Unlock()
 
 	// Defer iptables/route removal by 8 s so that existing tunneled TCP
@@ -268,54 +213,16 @@ func cleanupAgentConn(connID string) {
 	triggerDashboardBroadcast()
 }
 
-// relayConnMsg relays a message via WebSocket to another agent.
 func relayConnMsg(msg Message, actualSourceAgentID string) {
-	connLock.Lock()
-	targetAgentInfo, ok := connections[msg.TargetAgentID]
-	var relayWS *websocket.Conn
-	var relayWsmu *sync.Mutex
-	var wsOk bool
-	if ok {
-		relayWS, wsOk = directConnections[targetAgentInfo.DirectWSConnID]
-		relayWsmu = wsWriteMus[targetAgentInfo.DirectWSConnID]
-	}
-	connLock.Unlock()
-
-	if !ok {
-		log.Printf("Target agent %s not found. Cannot relay.", msg.TargetAgentID)
-		return
-	}
-	if !wsOk {
-		log.Printf("Direct WebSocket connection for agent %s not found. Cannot relay.", targetAgentInfo.DirectWSConnID)
-		return
-	}
-	payload, err := json.Marshal(msg)
-	if err != nil {
-		log.Printf("Error marshalling relay message: %v", err)
-		return
-	}
-	encrypted, err := encrypt(payload, getEncryptionKey())
-	if err != nil {
-		log.Printf("Error encrypting relay message: %v", err)
-		return
-	}
-	if relayWsmu != nil {
-		relayWsmu.Lock()
-	}
-	writeErr := relayWS.WriteMessage(websocket.BinaryMessage, encrypted)
-	if relayWsmu != nil {
-		relayWsmu.Unlock()
-	}
-	if writeErr != nil {
-		log.Printf("Error relaying message: %v", writeErr)
+	if err := sendControlMessageToAgent(msg.TargetAgentID, msg); err != nil {
+		log.Printf("Error relaying message to %s: %v", msg.TargetAgentID, err)
 	}
 }
 
-// dispatchConnMsg handles a message from a WebSocket-connected agent.
-func dispatchConnMsg(msg Message, sourceID string, agentIP string, connID *string, ws *websocket.Conn) {
+func dispatchConnMsg(msg Message, sourceID string, agentIP string, connID *string) {
 	switch msg.Type {
 	case "register":
-		handleMsgRegisterWS(msg, sourceID, agentIP, connID, ws)
+		handleMsgRegisterWS(msg, sourceID, agentIP, connID)
 	case "connect_response":
 		handleMsgConnectResp(msg)
 	case "dns_response":
@@ -375,7 +282,7 @@ func dispatchBindMsg(msg Message, sourceID string, agentIP string, connID *strin
 	}
 }
 
-func handleMsgRegisterWS(msg Message, sourceID string, agentIP string, connID *string, ws *websocket.Conn) {
+func handleMsgRegisterWS(msg Message, sourceID string, agentIP string, connID *string) {
 	var registerMsg RegisterMessage
 	if err := json.Unmarshal(msg.Payload, &registerMsg); err != nil {
 		log.Printf("error unmarshalling register message: %v", err)
@@ -399,15 +306,15 @@ func handleMsgRegisterWS(msg Message, sourceID string, agentIP string, connID *s
 					agentLastSeenMu.Unlock()
 					if time.Since(prevLastSeen) > 20*time.Second {
 						prevConnID := prevInfo.DirectWSConnID
-						if oldWS, wsOk := directConnections[prevConnID]; wsOk {
-							go oldWS.Close() // triggers deferred cleanupAgentConn
-							delete(directConnections, prevConnID)
+						if oldRS, rsOk := rtnSinks[prevConnID]; rsOk {
+							go oldRS.close()
+							delete(rtnSinks, prevConnID)
 						}
-						if oldSess, sessOk := yamuxSessions[prevConnID]; sessOk {
-							go oldSess.Close()
-							delete(yamuxSessions, prevConnID)
+						if oldBind, bindOk := bindConns[prevConnID]; bindOk {
+							go oldBind.Close()
+							delete(bindConns, prevConnID)
 						}
-						delete(wsWriteMus, prevConnID)
+						delete(bindWriteMus, prevConnID)
 						delete(connections, registerMsg.PrevID)
 						agentLastSeenMu.Lock()
 						delete(agentLastSeen, registerMsg.PrevID)
@@ -441,15 +348,9 @@ func handleMsgRegisterWS(msg Message, sourceID string, agentIP string, connID *s
 					}
 				}
 			}
-			directConnections[registeringAgentID] = ws
-			delete(directConnections, sourceID)
-			if sess, ok := yamuxSessions[sourceID]; ok {
-				yamuxSessions[registeringAgentID] = sess
-				delete(yamuxSessions, sourceID)
-			}
-			if mu, ok := wsWriteMus[sourceID]; ok {
-				wsWriteMus[registeringAgentID] = mu
-				delete(wsWriteMus, sourceID)
+			if rs, ok := rtnSinks[sourceID]; ok {
+				rtnSinks[registeringAgentID] = rs
+				delete(rtnSinks, sourceID)
 			}
 			*connID = registeringAgentID
 		}
@@ -510,10 +411,11 @@ func handleMsgRegisterBind(msg Message, sourceID string, agentIP string, connID 
 					agentLastSeenMu.Unlock()
 					if time.Since(prevLastSeen) > 20*time.Second {
 						prevConnID := prevInfo.DirectWSConnID
-						if oldSess, sessOk := yamuxSessions[prevConnID]; sessOk {
-							go oldSess.Close()
-							delete(yamuxSessions, prevConnID)
+						if oldBind, bindOk := bindConns[prevConnID]; bindOk {
+							go oldBind.Close()
+							delete(bindConns, prevConnID)
 						}
+						delete(bindWriteMus, prevConnID)
 						delete(connections, registerMsg.PrevID)
 						agentLastSeenMu.Lock()
 						delete(agentLastSeen, registerMsg.PrevID)
@@ -534,9 +436,13 @@ func handleMsgRegisterBind(msg Message, sourceID string, agentIP string, connID 
 					}
 				}
 			}
-			if sess, ok := yamuxSessions[*connID]; ok {
-				yamuxSessions[registeringAgentID] = sess
-				delete(yamuxSessions, *connID)
+			if bc, ok := bindConns[*connID]; ok {
+				bindConns[registeringAgentID] = bc
+				delete(bindConns, *connID)
+			}
+			if mu, ok := bindWriteMus[*connID]; ok {
+				bindWriteMus[registeringAgentID] = mu
+				delete(bindWriteMus, *connID)
 			}
 			*connID = registeringAgentID
 		}
@@ -640,6 +546,8 @@ func handleMsgConnectResp(msg Message) {
 		case ch.(chan ConnectResponse) <- resp:
 		default:
 		}
+	} else {
+		logVerbose("Late connect_response connID=%s success=%v", resp.ConnID, resp.Success)
 	}
 }
 
@@ -686,6 +594,33 @@ func markAgentSeen(agentID string) {
 		info.LastSeen = now
 	}
 	connLock.Unlock()
+}
+
+func startAgentStaleSweeper() {
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			var staleConnIDs []string
+			now := time.Now()
+			connLock.Lock()
+			agentLastSeenMu.Lock()
+			for agentID, info := range connections {
+				lastSeen := info.LastSeen
+				if t, ok := agentLastSeen[agentID]; ok {
+					lastSeen = t
+				}
+				if !lastSeen.IsZero() && now.Sub(lastSeen) > agentStaleTimeout {
+					staleConnIDs = append(staleConnIDs, info.DirectWSConnID)
+				}
+			}
+			agentLastSeenMu.Unlock()
+			connLock.Unlock()
+			for _, connID := range staleConnIDs {
+				cleanupAgentConn(connID)
+			}
+		}
+	}()
 }
 
 func handleMsgForward(msg Message, sourceID string) {
@@ -894,146 +829,20 @@ func handleMsgAgentFwdData(msg Message) {
 	}
 }
 
-// readWSAgentMsg reads one decrypted message from the agent connection.
-// For yamux connections, stream-level read errors are retried (the session
-// is still alive); only session-level errors propagate to the caller.
-func readWSAgentMsg(ws *websocket.Conn, yamuxSession *smux.Session, yamuxErr error) (Message, error) {
-	var msg Message
-	if yamuxErr == nil {
-		for {
-			stream, err := yamuxSession.AcceptStream()
-			if err != nil {
-				return msg, err // session-level error — caller will close connection
-			}
-			_ = stream.SetReadDeadline(time.Now().Add(10 * time.Second))
-			lenBuf := make([]byte, 4)
-			if _, err := io.ReadFull(stream, lenBuf); err != nil {
-				stream.Close()
-				logVerbose("Server: yamux read len error (skipping stream): %v", err)
-				continue
-			}
-			msgLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
-			if msgLen <= 0 || msgLen > 4<<20 {
-				stream.Close()
-				logVerbose("Server: yamux invalid frame length %d", msgLen)
-				continue
-			}
-			data := make([]byte, msgLen)
-			if _, err := io.ReadFull(stream, data); err != nil {
-				stream.Close()
-				logVerbose("Server: yamux read data error (skipping stream): %v", err)
-				continue
-			}
-			_ = stream.SetReadDeadline(time.Time{})
-			stream.Close()
-			plaintext, err := decrypt(data, getEncryptionKey())
-			if err != nil {
-				logVerbose("Server: yamux decrypt error (skipping stream): %v", err)
-				continue
-			}
-			return msg, json.Unmarshal(plaintext, &msg)
-		}
+func readBindAgentFrame(conn net.Conn) ([]byte, error) {
+	lenBuf := make([]byte, 4)
+	if _, err := io.ReadFull(conn, lenBuf); err != nil {
+		return nil, err
 	}
-	_, encrypted, err := ws.ReadMessage()
-	if err != nil {
-		return msg, err
+	msgLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
+	if msgLen <= 0 || msgLen > 4<<20 {
+		return nil, fmt.Errorf("bind: invalid frame length %d", msgLen)
 	}
-	ws.SetReadDeadline(time.Now().Add(90 * time.Second))
-	plaintext, err := decrypt(encrypted, getEncryptionKey())
-	if err != nil {
-		return msg, err
+	data := make([]byte, msgLen)
+	if _, err := io.ReadFull(conn, data); err != nil {
+		return nil, err
 	}
-	return msg, json.Unmarshal(plaintext, &msg)
-}
-
-func processWSAgentMsg(msg Message, connID *string, agentIP string, ws *websocket.Conn, limiter *rate.Limiter) {
-	if msg.Type != "data" && msg.Type != "udp_data" && !limiter.Allow() {
-		logVerbose("Agent %s: message rate limit exceeded, dropping message type=%s", *connID, msg.Type)
-		return
-	}
-	actualSourceAgentID := *connID
-	if msg.OriginalAgentID != "" {
-		actualSourceAgentID = msg.OriginalAgentID
-	}
-	if msg.TargetAgentID != "" && msg.TargetAgentID != "server" && msg.TargetAgentID != actualSourceAgentID {
-		relayConnMsg(msg, actualSourceAgentID)
-		return
-	}
-	dispatchConnMsg(msg, actualSourceAgentID, agentIP, connID, ws)
-}
-
-func handleConnections(w http.ResponseWriter, r *http.Request) {
-	clientIP := strings.Split(r.RemoteAddr, ":")[0]
-	if !canAcceptAgentConnection(clientIP) {
-		log.Printf("Reject agent connection from %s (rate limit or max agents reached)", clientIP)
-		http.Error(w, "Connection limit reached", http.StatusTooManyRequests)
-		return
-	}
-	defer releaseAgentConnection(clientIP)
-
-	agentIP := clientIP
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("WebSocket upgrade error: %v", err)
-		http.Error(w, "WebSocket upgrade failed", http.StatusBadRequest)
-		return
-	}
-	ws.SetReadLimit(1 << 20)
-	defer ws.Close()
-
-	if !authenticateWSAgent(ws, agentIP) {
-		return
-	}
-
-	connLock.Lock()
-	directConnectedAgentID := fmt.Sprintf("conn-%d", nextAgentID)
-	nextAgentID++
-	directConnections[directConnectedAgentID] = ws
-	wsWriteMus[directConnectedAgentID] = &sync.Mutex{}
-	connLock.Unlock()
-
-	muxCfg := smux.DefaultConfig()
-	muxCfg.Version = 2
-	muxCfg.KeepAliveInterval = 10 * time.Second
-	muxCfg.KeepAliveTimeout = 30 * time.Second
-	muxCfg.MaxStreamBuffer = 512 * 1024
-	yamuxSession, yamuxErr := smux.Server(newWSNetConn(ws), muxCfg)
-	if yamuxErr == nil {
-		connLock.Lock()
-		yamuxSessions[directConnectedAgentID] = yamuxSession
-		connLock.Unlock()
-	}
-	defer func() { cleanupAgentConn(directConnectedAgentID) }()
-
-	// Raw WS agents send ping frames; refresh the read deadline on any
-	// control traffic and reply explicitly so the agent can refresh its side.
-	if yamuxErr != nil {
-		pongWait := 90 * time.Second
-		ws.SetReadDeadline(time.Now().Add(pongWait))
-		ws.SetPingHandler(func(appData string) error {
-			ws.SetReadDeadline(time.Now().Add(pongWait))
-			ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			err := ws.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
-			ws.SetWriteDeadline(time.Time{})
-			return err
-		})
-		ws.SetPongHandler(func(string) error {
-			ws.SetReadDeadline(time.Now().Add(pongWait))
-			return nil
-		})
-	}
-
-	agentMsgLimiter := rate.NewLimiter(rate.Limit(1000), 2000)
-	for {
-		msg, err := readWSAgentMsg(ws, yamuxSession, yamuxErr)
-		if err != nil {
-			if !isNormalCloseError(err) {
-				log.Printf("Direct connection %s read error: %v", directConnectedAgentID, err)
-			}
-			break
-		}
-		processWSAgentMsg(msg, &directConnectedAgentID, agentIP, ws, agentMsgLimiter)
-	}
+	return data, nil
 }
 
 // handleBindAgentConn handles an incoming TCP bind agent connection.
@@ -1047,21 +856,11 @@ func handleBindAgentConn(conn net.Conn, state *bindConnectState) {
 		tc.SetNoDelay(true)
 	}
 
-	muxCfg := smux.DefaultConfig()
-	muxCfg.Version = 2
-	muxCfg.KeepAliveInterval = 10 * time.Second
-	muxCfg.KeepAliveTimeout = 30 * time.Second
-	muxCfg.MaxStreamBuffer = 512 * 1024
-	yamuxSession, err := smux.Server(conn, muxCfg)
-	if err != nil {
-		log.Printf("handleBindAgentConn: yamux server: %v", err)
-		return
-	}
-
 	connLock.Lock()
 	directConnectedAgentID := fmt.Sprintf("conn-%d", nextAgentID)
 	nextAgentID++
-	yamuxSessions[directConnectedAgentID] = yamuxSession
+	bindConns[directConnectedAgentID] = conn
+	bindWriteMus[directConnectedAgentID] = &sync.Mutex{}
 	connLock.Unlock()
 
 	if state != nil {
@@ -1073,52 +872,39 @@ func handleBindAgentConn(conn net.Conn, state *bindConnectState) {
 	defer func() { cleanupAgentConn(directConnectedAgentID) }()
 
 	for {
-		stream, err := yamuxSession.AcceptStream()
+		data, err := readBindAgentFrame(conn)
 		if err != nil {
 			if !isNormalCloseError(err) {
 				log.Printf("Bind agent %s read error: %v", directConnectedAgentID, err)
 			}
-			break
+			return
 		}
-		go func(s *smux.Stream) {
-			defer s.Close()
-			lenBuf := make([]byte, 4)
-			if _, err := io.ReadFull(s, lenBuf); err != nil {
-				return
+		plaintext, err := decrypt(data, getEncryptionKey())
+		if err != nil {
+			logVerbose("Bind agent %s decrypt error: %v", directConnectedAgentID, err)
+			continue
+		}
+		var msg Message
+		if err := json.Unmarshal(plaintext, &msg); err != nil {
+			logVerbose("Bind agent %s unmarshal error: %v", directConnectedAgentID, err)
+			continue
+		}
+		actualSourceAgentID := directConnectedAgentID
+		if msg.OriginalAgentID != "" {
+			actualSourceAgentID = msg.OriginalAgentID
+		}
+		if msg.TargetAgentID != "" && msg.TargetAgentID != "server" && msg.TargetAgentID != actualSourceAgentID {
+			relayMsg := Message{
+				Type:            msg.Type,
+				Payload:         msg.Payload,
+				OriginalAgentID: actualSourceAgentID,
+				TargetAgentID:   msg.TargetAgentID,
 			}
-			msgLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
-			if msgLen <= 0 || msgLen > 4<<20 {
-				return
+			if err := sendControlMessageToAgent(msg.TargetAgentID, relayMsg); err != nil {
+				log.Printf("Bind relay to %s failed: %v", msg.TargetAgentID, err)
 			}
-			data := make([]byte, msgLen)
-			if _, err := io.ReadFull(s, data); err != nil {
-				return
-			}
-			plaintext, err := decrypt(data, getEncryptionKey())
-			if err != nil {
-				return
-			}
-			var msg Message
-			if err := json.Unmarshal(plaintext, &msg); err != nil {
-				return
-			}
-			actualSourceAgentID := directConnectedAgentID
-			if msg.OriginalAgentID != "" {
-				actualSourceAgentID = msg.OriginalAgentID
-			}
-			if msg.TargetAgentID != "" && msg.TargetAgentID != "server" && msg.TargetAgentID != actualSourceAgentID {
-				relayMsg := Message{
-					Type:            msg.Type,
-					Payload:         msg.Payload,
-					OriginalAgentID: actualSourceAgentID,
-					TargetAgentID:   msg.TargetAgentID,
-				}
-				if err := sendControlMessageToAgent(msg.TargetAgentID, relayMsg); err != nil {
-					log.Printf("Bind relay to %s failed: %v", msg.TargetAgentID, err)
-				}
-				return
-			}
-			dispatchBindMsg(msg, actualSourceAgentID, agentIP, &directConnectedAgentID)
-		}(stream)
+			continue
+		}
+		dispatchBindMsg(msg, actualSourceAgentID, agentIP, &directConnectedAgentID)
 	}
 }

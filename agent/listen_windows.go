@@ -24,5 +24,5 @@ func listenAgentTCP(addr string) (net.Listener, error) {
 			return controlErr
 		},
 	}
-	return lc.Listen(context.Background(), "tcp", addr)
+	return lc.Listen(context.Background(), "tcp4", addr)
 }

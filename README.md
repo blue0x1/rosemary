@@ -27,6 +27,7 @@ Rosemary deploys lightweight agents on remote hosts and transparently intercepts
 - [Screenshots](#screenshots)
 - [Quick Start](#quick-start)
 - [PowerShell Agent](#4-powershell-agent-invoke-rosemary)
+- [Release Notes](#release-notes)
 - [CLI Reference](#cli-reference)
 - [API](#api)
 - [Build](#build)
@@ -61,6 +62,7 @@ Connect multiple agents at once and traffic is automatically routed to whichever
 | **Discovery** | Ping · Ping sweep · TCP/UDP port scan via agent |
 | **DNS** | Intercepts DNS, resolves through agents, private and public domains |
 | **Pivoting** | Multi-hop through multiple agents (3+ hops tested) |
+| **Transport** | QUIC/UDP outbound agents · encrypted TCP bind agents |
 | **Dashboard** | Web UI with real-time agent graph, routing table, log viewer |
 | **API** | Full REST API with token-based auth (`read`/`write`/`admin`) |
 | **CLI** | Interactive REPL + web-based CLI panel |
@@ -221,7 +223,7 @@ Dashboard available at `http://server-ip:1024`: log in with your key.
 ### 2. Deploy an Agent
 
 ```bash
-# Standard (agent connects to server)
+# Standard QUIC/UDP mode (agent connects to server)
 ./agent-linux-amd64 -s server-ip:1024 -k YOUR_KEY
 
 # Background mode
@@ -245,7 +247,7 @@ rosemary> connect agent-ip:9001
 
 ### 4. PowerShell Agent (Invoke-Rosemary)
 
-`Invoke-Rosemary.ps1` is a pure PowerShell agent with no dependencies.
+`Invoke-Rosemary.ps1` supports both outbound agent mode and bind mode. Bind mode works on legacy Windows PowerShell hosts. Outbound agent mode uses QUIC and requires PowerShell 7 on a .NET runtime where `System.Net.Quic` and libmsquic are available.
 
 ```powershell
 # Import
@@ -254,18 +256,23 @@ rosemary> connect agent-ip:9001
 # Help
 Invoke-Rosemary -Help
 
-# Agent mode (connects to server)
 Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY
 
-# Bind mode (server connects to agent)
 Invoke-Rosemary -Mode agent-bind -Listen 0.0.0.0:9001 -Key YOUR_KEY
 
-# Run silently in background (hidden window)
 Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY -Background
 
-# Verbose output for diagnostics
 Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY -Verbose
 ```
+
+Check QUIC support before using PowerShell outbound mode:
+
+```powershell
+[type]::GetType('System.Net.Quic.QuicConnection, System.Net.Quic') -ne $null
+[System.Net.Quic.QuicConnection]::IsSupported
+```
+
+If either check fails, use the Go Windows agent for outbound mode or run the PowerShell agent in `agent-bind` mode.
 
 ### Parameters
 
@@ -278,7 +285,6 @@ Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY -Verbose
 | `-Background` | Relaunch as a hidden background process and return immediately |
 | `-Verbose` | Show connection and session diagnostic output |
 
-
 ### 5. Egress: Route All Internet Traffic
 
 ```bash
@@ -287,6 +293,18 @@ rosemary> egress agent-1
 ```
 
 All traffic to IPs outside known agent subnets now flows through `agent-1`. DNS continues to work for both private and public domains.
+
+---
+
+## Release Notes
+
+This version moves outbound agents to QUIC/UDP transport, keeps bind agents on encrypted TCP framing, updates the PowerShell agent for both modes, and refreshes CLI list output with consistently aligned tables for agents, routes, forwards, reverse forwards, SOCKS5 proxies, and API tokens.
+
+Compatibility notes:
+
+- Existing WebSocket/smux agents must be replaced with the new Go agents.
+- PowerShell outbound mode requires PowerShell 7 with .NET QUIC support.
+- PowerShell bind mode remains the fallback for Windows PowerShell 5.1 hosts.
 
 ---
 
@@ -441,7 +459,7 @@ They are embedded into the binary at build time.
 ## Security
 
 - **Encryption**: AES-256-GCM on all agent ↔ server communication
-- **Authentication**: challenge-response on WebSocket connect; shared key required
+- **Authentication**: shared-key authenticated agent transport
 - **Dashboard**: session-based login with CSRF token protection
 - **API tokens**: scoped permissions: `read` / `write` / `admin`
 - **Privilege separation**: agents require no root; only the server needs elevated rights

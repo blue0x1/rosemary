@@ -47,7 +47,6 @@ import (
 	"github.com/chzyer/readline"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"github.com/xtaci/smux"
 	"golang.org/x/time/rate"
 )
 
@@ -76,6 +75,8 @@ var (
 )
 
 var currentLogLevel int32 = logLevelInfo
+
+var udpFallbackLogLimiter sync.Map
 
 func logDebug(format string, args ...interface{}) {
 	if atomic.LoadInt32(&currentLogLevel) >= logLevelDebug {
@@ -106,6 +107,18 @@ func logVerbose(format string, args ...interface{}) {
 	appendServerLog(fmt.Sprintf(now+" "+format, args...))
 }
 
+func logUDPFallbackRateLimited(port int, ip net.IP) {
+	key := fmt.Sprintf("%d/%s", port, ip.String())
+	now := time.Now()
+	if last, ok := udpFallbackLogLimiter.Load(key); ok {
+		if now.Sub(last.(time.Time)) < 30*time.Second {
+			return
+		}
+	}
+	udpFallbackLogLimiter.Store(key, now)
+	logVerbose("Rejecting UDP/%d egress to %s to force TCP fallback", port, ip)
+}
+
 var encryptionKeyAtomic atomic.Value
 
 func getEncryptionKey() []byte {
@@ -126,12 +139,6 @@ var encryptionKey []byte
 var socksMu sync.Mutex
 var respChanMap sync.Map
 var socksListeners = make(map[string]net.Listener)
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
 
 var dashboardUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -385,15 +392,17 @@ type PingRecord struct {
 }
 
 var (
-	settingsMu      sync.Mutex
-	httpServerMu    sync.Mutex
-	currentHTTPPort = 1024
-	currentTCPPort  = 1080
-	currentUDPPort  = 1081
-	currentDNSPort  = 5300
-	currentWSPath   = "/ws"
-	httpServer      *http.Server
-	httpServeMux    *http.ServeMux
+	settingsMu         sync.Mutex
+	httpServerMu       sync.Mutex
+	currentHTTPPort    = 1024
+	currentTCPPort     = 1080
+	currentUDPPort     = 1081
+	currentDNSPort     = 5300
+	currentAgentPort   = 2048
+	currentWSPath      = "/ws"
+	httpServer         *http.Server
+	httpServeMux       *http.ServeMux
+	agentYamuxListener net.Listener
 )
 
 type ServerSettings struct {
@@ -525,11 +534,11 @@ func restoreAgentForwards(agentID string) {
 }
 
 var (
-	connections       = make(map[string]*AgentInfo)
-	directConnections = make(map[string]*websocket.Conn)
+	connections = make(map[string]*AgentInfo)
+	rtnSinks    = make(map[string]*rtnSink)
 
-	wsWriteMus        = make(map[string]*sync.Mutex)
-	yamuxSessions     = make(map[string]*smux.Session)
+	bindConns         = make(map[string]net.Conn)
+	bindWriteMus      = make(map[string]*sync.Mutex)
 	connLock          = sync.Mutex{}
 	nextAgentID       = 1
 	routingTable      = &RoutingTable{routes: make(map[string]string)}
@@ -939,7 +948,8 @@ const (
 	rateBurst      = 10
 	udpTimeout     = 60 * time.Second
 
-	agentConnectResponseTimeout = 8 * time.Second
+	agentConnectResponseTimeout = 30 * time.Second
+	agentStaleTimeout           = 35 * time.Second
 )
 
 type pendingConn struct {
@@ -953,7 +963,7 @@ func newPendingConn(conn net.Conn, agentID string) *pendingConn {
 	pc := &pendingConn{
 		conn:    conn,
 		agentID: agentID,
-		writeCh: make(chan []byte, 1024),
+		writeCh: make(chan []byte, 4096),
 	}
 	go func() {
 		for data := range pc.writeCh {
@@ -970,15 +980,8 @@ func (p *pendingConn) send(data []byte) {
 	dataCopy := append([]byte(nil), data...)
 	select {
 	case p.writeCh <- dataCopy:
-	default:
-		go func() {
-			defer func() { recover() }()
-			select {
-			case p.writeCh <- dataCopy:
-			case <-time.After(5 * time.Second):
-				p.closeConn()
-			}
-		}()
+	case <-time.After(5 * time.Second):
+		p.closeConn()
 	}
 }
 
@@ -1047,13 +1050,13 @@ func disconnectAllAgents() {
 
 	connLock.Lock()
 	defer connLock.Unlock()
-	for id, conn := range directConnections {
-		conn.Close()
-		delete(directConnections, id)
+	for id, rs := range rtnSinks {
+		go rs.close()
+		delete(rtnSinks, id)
 	}
-	for id, sess := range yamuxSessions {
-		sess.Close()
-		delete(yamuxSessions, id)
+	for id, bc := range bindConns {
+		bc.Close()
+		delete(bindConns, id)
 	}
 	for id := range connections {
 		delete(connections, id)
@@ -1958,8 +1961,11 @@ func handleAPIAgentDisconnect(w http.ResponseWriter, agentID string) {
 	}
 	sendControlMessageToAgent(agentID, Message{Type: "disconnect", Payload: []byte(`{}`), TargetAgentID: agentID})
 	connLock.Lock()
-	if ws, wsOk := directConnections[agentInfo.DirectWSConnID]; wsOk {
-		ws.Close()
+	if rs, rsOk := rtnSinks[agentInfo.DirectWSConnID]; rsOk {
+		go rs.close()
+	}
+	if bc, bindOk := bindConns[agentInfo.DirectWSConnID]; bindOk {
+		bc.Close()
 	}
 	connLock.Unlock()
 	log.Printf(colorBoldRed+"[-]"+colorReset+" "+colorDim+"[API]"+colorReset+" Agent "+colorYellow+"%s"+colorReset+" disconnected", agentID)
@@ -2777,9 +2783,9 @@ func sendControlMessageToAgent(agentID string, msg Message) error {
 		connLock.Unlock()
 		return fmt.Errorf("target agent %s not found", agentID)
 	}
-	session, hasYamux := yamuxSessions[targetAgentInfo.DirectWSConnID]
-	directWSConn, wsOk := directConnections[targetAgentInfo.DirectWSConnID]
-	wsmu, _ := wsWriteMus[targetAgentInfo.DirectWSConnID]
+	rsink, rsinkOk := rtnSinks[targetAgentInfo.DirectWSConnID]
+	bindConn, bindOk := bindConns[targetAgentInfo.DirectWSConnID]
+	bindmu := bindWriteMus[targetAgentInfo.DirectWSConnID]
 	connLock.Unlock()
 
 	payload, err := json.Marshal(msg)
@@ -2791,33 +2797,28 @@ func sendControlMessageToAgent(agentID string, msg Message) error {
 		return fmt.Errorf("failed to encrypt message: %v", err)
 	}
 
-	if hasYamux && session != nil {
-		stream, err := session.OpenStream()
-		if err != nil {
-			return fmt.Errorf("yamux open stream: %v", err)
+	if rsinkOk {
+		return rsink.writeMessage(msg, encrypted)
+	}
+
+	if bindOk {
+		if bindmu != nil {
+			bindmu.Lock()
+			defer bindmu.Unlock()
 		}
-		defer stream.Close()
-		_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
 		l := len(encrypted)
-		buf := []byte{byte(l >> 24), byte(l >> 16), byte(l >> 8), byte(l)}
-		buf = append(buf, encrypted...)
-		_, err = stream.Write(buf)
-		_ = stream.SetDeadline(time.Time{})
+		hdr := []byte{byte(l >> 24), byte(l >> 16), byte(l >> 8), byte(l)}
+		bindConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		if _, err := bindConn.Write(hdr); err != nil {
+			bindConn.SetWriteDeadline(time.Time{})
+			return err
+		}
+		_, err = bindConn.Write(encrypted)
+		bindConn.SetWriteDeadline(time.Time{})
 		return err
 	}
 
-	if !wsOk {
-		return fmt.Errorf("no connection for agent %s", agentID)
-	}
-
-	if wsmu != nil {
-		wsmu.Lock()
-		defer wsmu.Unlock()
-	}
-	directWSConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	err = directWSConn.WriteMessage(websocket.BinaryMessage, encrypted)
-	directWSConn.SetWriteDeadline(time.Time{})
-	return err
+	return fmt.Errorf("no connection for agent %s", agentID)
 }
 
 func startAgentListenerAndWait(agentID, listenerID string, msg Message) error {
@@ -3378,8 +3379,8 @@ func handleAPIConnectBindDELETE(w http.ResponseWriter, r *http.Request, addr str
 					break
 				}
 			}
-			if sess, ok2 := yamuxSessions[connID]; ok2 {
-				sess.Close()
+			if bc, ok2 := bindConns[connID]; ok2 {
+				bc.Close()
 			}
 			connLock.Unlock()
 			if agentID != "" {
@@ -3427,6 +3428,18 @@ func isServerLocalIP(ip net.IP) bool {
 		}
 	}
 	return false
+}
+
+func shouldRejectUDPEgress(dst *net.UDPAddr) bool {
+	if dst == nil {
+		return false
+	}
+	switch dst.Port {
+	case 443:
+		return true
+	default:
+		return false
+	}
 }
 
 func getServerIPs() []net.IP {
@@ -3551,7 +3564,7 @@ func startREPL() {
     ██   ██  ██████  ███████ ███████ ██      ██ ██   ██ ██   ██    ██    
 
                                                                     Coded by blue0x1
-                                                                    Version: 1.0.4
+                                                                    Version: 1.1.0
 `
 
 	if useANSI {
@@ -3564,7 +3577,7 @@ func startREPL() {
     ██   ██  ██████  ███████ ███████ ██      ██ ██   ██ ██   ██    ██
 ` + colorDim + `
                                                                     Coded by blue0x1
-                                                                    Version: 1.0.4
+                                                                    Version: 1.1.0
 ` + colorReset
 	}
 
@@ -4010,8 +4023,8 @@ func detectWSEndpointPath(wsPathFlag string) string {
 func registerRoutes(wsEndpointPath string, readOnly, writeOp, adminOp func(http.HandlerFunc) http.HandlerFunc) {
 	httpServeMux.HandleFunc("/login", rateLimitMiddleware(handleLogin))
 	httpServeMux.HandleFunc("/login-post", rateLimitMiddleware(handleLoginPost))
-	httpServeMux.HandleFunc(wsEndpointPath, handleConnections)
-	log.Printf("Agent WebSocket endpoint: %s", wsEndpointPath)
+	_ = wsEndpointPath
+	log.Printf("Agent transport: QUIC on the configured agent port")
 
 	subFS, _ := fs.Sub(staticContent, "webroot")
 	staticFileServer := http.FileServer(http.FS(subFS))
@@ -4134,6 +4147,7 @@ func main() {
 
 	agentKey := flag.String("key", "", "Encryption key")
 	httpPortFlag := flag.Int("port", 1024, "HTTP dashboard port")
+	agentPortFlag := flag.Int("agent-port", 2048, "Raw yamux agent port")
 	tcpPortFlag := flag.Int("tcp-port", 1080, "TCP proxy port")
 	udpPortFlag := flag.Int("udp-port", 1081, "UDP proxy port")
 	dnsPortFlag := flag.Int("dns-port", 5300, "DNS proxy port")
@@ -4148,6 +4162,7 @@ func main() {
 	}
 
 	currentHTTPPort = *httpPortFlag
+	currentAgentPort = *agentPortFlag
 	currentTCPPort = *tcpPortFlag
 	currentUDPPort = *udpPortFlag
 	currentDNSPort = *dnsPortFlag
@@ -4167,10 +4182,13 @@ func main() {
 
 	startLoginCsrfCleaner()
 	startPreConnSweeper()
+	startAgentStaleSweeper()
 
 	serverIPs = getServerIPs()
 	log.Printf(colorBoldCyan+"Server IPs: "+colorReset+colorBoldWhite+"%v"+colorReset, serverIPs)
 	log.Printf(colorBoldGreen+"Dashboard: "+colorReset+colorBoldWhite+"http://0.0.0.0:%d"+colorReset, currentHTTPPort)
+	tuneBSDUDPBuffers()
+	go startRtnListener(currentAgentPort)
 
 	initProxyServices()
 	go startDashboardBroadcastLoop()

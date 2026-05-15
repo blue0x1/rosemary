@@ -41,9 +41,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/miekg/dns"
-	"github.com/xtaci/smux"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -185,11 +183,8 @@ func (a *agentFwdConn) send(data []byte) {
 	copy(cp, data)
 	select {
 	case a.writeCh <- cp:
-	default:
-		go func() {
-			defer func() { recover() }()
-			a.writeCh <- cp
-		}()
+	case <-time.After(5 * time.Second):
+		a.close()
 	}
 }
 
@@ -864,7 +859,7 @@ func queryPublicDNS(domain string, qtype uint16) []DNSAnswer {
 	return nil
 }
 
-func handleAgentDNSRequest(agentID string, msg DNSRequestMessage, writeMu *sync.Mutex, wsConn *websocket.Conn, yamuxClient *smux.Session) {
+func handleAgentDNSRequest(agentID string, msg DNSRequestMessage, sendEnc func([]byte) error) {
 	var answers []DNSAnswer
 	domain := strings.TrimSuffix(msg.Domain, ".")
 	switch msg.QType {
@@ -916,7 +911,9 @@ func handleAgentDNSRequest(agentID string, msg DNSRequestMessage, writeMu *sync.
 		logVerbose("Agent: encryption error: %v", err)
 		return
 	}
-	agentSend(yamuxClient, wsConn, writeMu, encrypted)
+	if sendEnc != nil {
+		_ = sendEnc(encrypted)
+	}
 }
 
 func agentFwdGenID() string {
@@ -925,7 +922,7 @@ func agentFwdGenID() string {
 	return fmt.Sprintf("%x", b)
 }
 
-func handleAgentClientConnection(clientConn net.Conn, destinationHost string, destinationPort int, agentAssignedID string, sendEnc func([]byte) error) {
+func handleAgentClientConnection(clientConn net.Conn, destinationHost string, destinationPort int, agentAssignedID string, sendEnc func(string, []byte) error) {
 	afcOwned := false
 	defer func() {
 		if !afcOwned {
@@ -952,7 +949,7 @@ func handleAgentClientConnection(clientConn net.Conn, destinationHost string, de
 		logVerbose("Agent %s: fwd encrypt error: %v", agentAssignedID, err)
 		return
 	}
-	if err := sendEnc(enc); err != nil {
+	if err := sendEnc(connID, enc); err != nil {
 		logVerbose("Agent %s: fwd send agent_fwd_open error: %v", agentAssignedID, err)
 		return
 	}
@@ -994,7 +991,7 @@ func handleAgentClientConnection(clientConn net.Conn, destinationHost string, de
 		if err != nil {
 			return err
 		}
-		return sendEnc(enc)
+		return sendEnc(connID, enc)
 	}
 
 	buf := make([]byte, 32*1024)

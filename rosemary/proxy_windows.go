@@ -44,6 +44,8 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
+func tuneBSDUDPBuffers() {}
+
 // WinDivert.dll and WinDivert64.sys must be present at build time.
 // Download from https://reqrypt.org/windivert.html (v2.x, 64-bit).
 //
@@ -761,6 +763,12 @@ func cleanupUDP() {
 }
 
 func handleUDPPacket(_ *net.UDPConn, clientAddr *net.UDPAddr, origDst *net.UDPAddr, data []byte) {
+	if shouldRejectUDPEgress(origDst) {
+		logUDPFallbackRateLimited(origDst.Port, origDst.IP)
+		sendUDPPortUnreachable(clientAddr.IP, origDst)
+		return
+	}
+
 	agentID, ok := routingTable.FindAgentForIP(origDst.IP)
 	if !ok {
 		egress := getDefaultEgressAgent()
@@ -1725,19 +1733,21 @@ func listSocksProxies(out *strings.Builder) {
 	socksMu.Lock()
 	defer socksMu.Unlock()
 
-	fmt.Fprintln(out, "\nSOCKS5 Servers (Proxy Pivots):")
-	fmt.Fprintln(out, "ID              Port  Agent        Conns  Uptime")
-	fmt.Fprintln(out, strings.Repeat("-", 60))
+	if len(socksProxies) == 0 {
+		fmt.Fprintln(out, "No SOCKS5 proxies.")
+		return
+	}
 
+	cols := []consoleColumn{{"ID", 14}, {"Port", 8}, {"Agent", 14}, {"Conns", 6}, {"Uptime", 14}}
+	tableHeader(out, cols)
 	for id, proxy := range socksProxies {
 		uptime := time.Since(proxy.StartTime).Truncate(time.Second).String()
-		fmt.Fprintf(out, "%-14s %s  %-12s %d    %s\n",
-			id,
+		tableColorRow(out, cols,
+			colorDim+id+colorReset,
 			fmt.Sprintf(":%d", proxy.LocalPort),
-			proxy.AgentID,
-			proxy.Connections,
-			uptime,
-		)
+			colorCyan+proxy.AgentID+colorReset,
+			fmt.Sprintf("%d", proxy.Connections),
+			uptime)
 	}
 }
 

@@ -28,6 +28,8 @@ import (
 	"syscall"
 )
 
+func tuneBSDUDPBuffers() {}
+
 var (
 	proxyPort    = 1080
 	udpProxyPort = 1081

@@ -25,8 +25,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/http"
-	"net/url"
 	"os"
 	"os/user"
 	"runtime"
@@ -34,21 +32,9 @@ import (
 	"time"
 
 	"strings"
-
-	"github.com/gorilla/websocket"
-	"github.com/xtaci/smux"
 )
 
 var agentBufPool = sync.Pool{New: func() interface{} { b := make([]byte, 256*1024); return &b }}
-
-func agentYamuxConfig() *smux.Config {
-	cfg := smux.DefaultConfig()
-	cfg.Version = 2
-	cfg.KeepAliveInterval = 10 * time.Second
-	cfg.KeepAliveTimeout = 30 * time.Second
-	cfg.MaxStreamBuffer = 512 * 1024
-	return cfg
-}
 
 func isAgentNormalCloseError(err error) bool {
 	s := err.Error()
@@ -79,69 +65,38 @@ func decompressData(b []byte) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
-func agentSend(yamuxClient *smux.Session, ws *websocket.Conn, writeMu *sync.Mutex, encrypted []byte) error {
-	if yamuxClient != nil {
-		stream, err := yamuxClient.OpenStream()
-		if err != nil {
-			return err
-		}
-		defer stream.Close()
-		_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
-		l := len(encrypted)
-		buf := []byte{byte(l >> 24), byte(l >> 16), byte(l >> 8), byte(l)}
-		buf = append(buf, encrypted...)
-		_, err = stream.Write(buf)
-		_ = stream.SetDeadline(time.Time{})
-		return err
-	}
-	writeMu.Lock()
-	defer writeMu.Unlock()
-	ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	err := ws.WriteMessage(websocket.BinaryMessage, encrypted)
-	ws.SetWriteDeadline(time.Time{})
-	return err
+func agentSend(c agentTransport, _ *sync.Mutex, encrypted []byte) error {
+	return c.write(encrypted)
 }
 
-func agentSendRaw(yamuxClient *smux.Session, conn net.Conn, writeMu *sync.Mutex, encrypted []byte) error {
-	if yamuxClient != nil {
-		stream, err := yamuxClient.OpenStream()
-		if err != nil {
-			return err
-		}
-		defer stream.Close()
-		_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
-		l := len(encrypted)
-		buf := []byte{byte(l >> 24), byte(l >> 16), byte(l >> 8), byte(l)}
-		buf = append(buf, encrypted...)
-		_, err = stream.Write(buf)
-		_ = stream.SetDeadline(time.Time{})
-		return err
-	}
+func agentSendRaw(conn net.Conn, writeMu *sync.Mutex, encrypted []byte) error {
 	writeMu.Lock()
 	defer writeMu.Unlock()
 	l := len(encrypted)
-	buf := []byte{byte(l >> 24), byte(l >> 16), byte(l >> 8), byte(l)}
-	buf = append(buf, encrypted...)
-	_, err := conn.Write(buf)
+	hdr := []byte{byte(l >> 24), byte(l >> 16), byte(l >> 8), byte(l)}
+	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if _, err := conn.Write(hdr); err != nil {
+		conn.SetWriteDeadline(time.Time{})
+		return err
+	}
+	_, err := conn.Write(encrypted)
+	conn.SetWriteDeadline(time.Time{})
 	return err
 }
 
-func readSmuxFrame(s *smux.Stream) ([]byte, error) {
-	defer s.Close()
-	_ = s.SetReadDeadline(time.Now().Add(10 * time.Second))
+func readBindFrame(conn net.Conn) ([]byte, error) {
 	lenBuf := make([]byte, 4)
-	if _, err := io.ReadFull(s, lenBuf); err != nil {
+	if _, err := io.ReadFull(conn, lenBuf); err != nil {
 		return nil, err
 	}
 	msgLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
 	if msgLen <= 0 || msgLen > 4<<20 {
-		return nil, fmt.Errorf("invalid smux frame length %d", msgLen)
+		return nil, fmt.Errorf("invalid bind frame length %d", msgLen)
 	}
 	data := make([]byte, msgLen)
-	if _, err := io.ReadFull(s, data); err != nil {
+	if _, err := io.ReadFull(conn, data); err != nil {
 		return nil, err
 	}
-	_ = s.SetReadDeadline(time.Time{})
 	return data, nil
 }
 
@@ -175,25 +130,11 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 
 	var persistedID string
 
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 15 * time.Second}
-			conn, err := d.DialContext(ctx, network, addr)
-			if err == nil {
-				if tc, ok := conn.(*net.TCPConn); ok {
-					tc.SetNoDelay(true)
-				}
-			}
-			return conn, err
-		},
-	}
-	wsHeaders := http.Header{
-		"User-Agent": []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"},
-	}
-	dialWS := func(u string) (*websocket.Conn, error) {
+	_ = wsPath
+
+	for {
+		logVerbose("Agent: connecting to quic://%s", serverAddr)
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
 		go func() {
 			select {
 			case <-agentStop:
@@ -201,15 +142,13 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 			case <-ctx.Done():
 			}
 		}()
-		c, _, err := dialer.DialContext(ctx, u, wsHeaders)
-		return c, err
-	}
-
-	for {
-		u := url.URL{Scheme: "ws", Host: serverAddr, Path: wsPath}
-		logVerbose("Agent: connecting to %s", u.String())
-		c, err := dialWS(u.String())
+		var c agentTransport
+		rc, err := dialRtn(ctx, serverAddr)
+		if err == nil {
+			c = rc
+		}
 		if err != nil {
+			cancel()
 			select {
 			case <-agentStop:
 				return
@@ -222,71 +161,12 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 			}
 			continue
 		}
-		c.SetReadLimit(1 << 20)
 
-		{
-			c.SetReadDeadline(time.Now().Add(10 * time.Second))
-			_, rawChallenge, err := c.ReadMessage()
-			c.SetReadDeadline(time.Time{})
-			if err != nil {
-				logVerbose("Agent: auth challenge read error: %v, retrying...", err)
-				c.Close()
-				if !agentSleep(5 * time.Second) {
-					return
-				}
-				continue
-			}
-			plain, err := decrypt(rawChallenge, getEncryptionKey())
-			if err != nil {
-				logVerbose("Agent: auth challenge decrypt error (wrong key?): %v, retrying...", err)
-				c.Close()
-				if !agentSleep(5 * time.Second) {
-					return
-				}
-				continue
-			}
-			var challengeMsg Message
-			if err := json.Unmarshal(plain, &challengeMsg); err != nil || challengeMsg.Type != "auth_challenge" {
-				logVerbose("Agent: unexpected auth message type, retrying...")
-				c.Close()
-				if !agentSleep(5 * time.Second) {
-					return
-				}
-				continue
-			}
-			respMsg := Message{Type: "auth_response", Payload: challengeMsg.Payload}
-			respJSON, _ := json.Marshal(respMsg)
-			enc, err := encrypt(respJSON, getEncryptionKey())
-			if err != nil {
-				logVerbose("Agent: auth response encrypt error: %v, retrying...", err)
-				c.Close()
-				if !agentSleep(5 * time.Second) {
-					return
-				}
-				continue
-			}
-			c.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			err = c.WriteMessage(websocket.BinaryMessage, enc)
-			c.SetWriteDeadline(time.Time{})
-			if err != nil {
-				logVerbose("Agent: auth response send error: %v, retrying...", err)
-				c.Close()
-				if !agentSleep(5 * time.Second) {
-					return
-				}
-				continue
-			}
-		}
 		resetBackoff()
-
-		yamuxClient, yamuxErr := smux.Client(newWSNetConn(c), agentYamuxConfig())
-		if yamuxErr != nil {
-			logVerbose("Agent: yamux client error: %v, falling back to raw WS", yamuxErr)
-			yamuxClient = nil
-		}
 
 		agentAssignedID := persistedID
 		var writeMu sync.Mutex
+		var uploadLanesOnce sync.Once
 
 		subnets, err := getSubnets()
 		if err != nil {
@@ -326,7 +206,7 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 			}
 			continue
 		}
-		if err := agentSend(yamuxClient, c, &writeMu, encrypted); err != nil {
+		if err := agentSend(c, &writeMu, encrypted); err != nil {
 			logVerbose("Agent: register send error: %v, retrying...", err)
 			c.Close()
 			if !agentSleep(5 * time.Second) {
@@ -337,7 +217,9 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 
 		done := make(chan struct{})
 		var targetConns sync.Map
+		var targetWriters sync.Map
 		var udpConns sync.Map
+		var udpWriters sync.Map
 		var canceledConns sync.Map
 
 		sendDataMsg := func(connID string, data []byte, close bool) {
@@ -356,7 +238,9 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 				logVerbose("Agent %s: encryption error: %v", agentAssignedID, err)
 				return
 			}
-			agentSend(yamuxClient, c, &writeMu, enc)
+			if err := c.writeDataForConn(connID, enc); err != nil {
+				logVerbose("Agent %s: data send error: %v", agentAssignedID, err)
+			}
 		}
 
 		sendICMPResponse := func(resp ICMPResponse) {
@@ -368,10 +252,11 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 				logVerbose("Agent %s: icmp-response encryption error: %v", agentAssignedID, err)
 				return
 			}
-			agentSend(yamuxClient, c, &writeMu, enc)
+			agentSend(c, &writeMu, enc)
 		}
 
-		dispatchWSAgentMsg := func(encrypted []byte) {
+		var dispatchWSAgentMsg func([]byte)
+		dispatchWSAgentMsg = func(encrypted []byte) {
 			plaintext, err := decrypt(encrypted, getEncryptionKey())
 			if err != nil {
 				logVerbose("Agent: decrypt error: %v", err)
@@ -392,6 +277,9 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 				agentAssignedID = payload.ID
 				persistedID = payload.ID
 				logVerbose("Agent: assigned ID: %s", agentAssignedID)
+				uploadLanesOnce.Do(func() {
+					c.startUploadLanes(ctx, agentAssignedID, dispatchWSAgentMsg)
+				})
 
 			case "reconnect":
 				logVerbose("Agent %s: received reconnect command, reconnecting...", agentAssignedID)
@@ -403,7 +291,9 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 					logVerbose("Agent: invalid dns_request: %v", err)
 					return
 				}
-				go handleAgentDNSRequest(agentAssignedID, dnsReq, &writeMu, c, yamuxClient)
+				go handleAgentDNSRequest(agentAssignedID, dnsReq, func(encrypted []byte) error {
+					return agentSend(c, &writeMu, encrypted)
+				})
 
 			case "ping-sweep-request":
 				var req PingSweepRequest
@@ -421,7 +311,7 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 					if err != nil {
 						return
 					}
-					agentSend(yamuxClient, c, &writeMu, enc)
+					agentSend(c, &writeMu, enc)
 				}(req)
 
 			case "start-agent-listener":
@@ -439,7 +329,7 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 					if err != nil {
 						return
 					}
-					agentSend(yamuxClient, c, &writeMu, enc) //nolint:errcheck
+					agentSend(c, &writeMu, enc) //nolint:errcheck
 				}
 				logVerbose("Agent %s: Starting listener on port %d -> %s:%d", agentAssignedID, req.AgentListenPort, req.DestinationHost, req.DestinationPort)
 				listenerCtx, listenerCancel := context.WithCancel(context.Background())
@@ -522,8 +412,8 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 									continue
 								}
 							}
-							sendEnc := func(data []byte) error {
-								return agentSend(yamuxClient, c, &writeMu, data)
+							sendEnc := func(connID string, data []byte) error {
+								return c.writeDataForConn(connID, data)
 							}
 							go handleAgentClientConnection(clientConn, req.DestinationHost, req.DestinationPort, agentAssignedID, sendEnc)
 						}
@@ -554,6 +444,7 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 					logVerbose("Agent %s: invalid connect request: %v", agentAssignedID, err)
 					return
 				}
+				logVerbose("Agent %s: connect request conn=%s proto=%s target=%s:%d", agentAssignedID, req.ConnID, req.Protocol, req.TargetHost, req.TargetPort)
 				sendConnectResponse := func(connID string, success bool, errMsg string) error {
 					resp := ConnectResponse{ConnID: connID, Success: success, Error: errMsg}
 					p, _ := json.Marshal(resp)
@@ -563,7 +454,13 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 					if err != nil {
 						return err
 					}
-					return agentSend(yamuxClient, c, &writeMu, enc)
+					err = agentSend(c, &writeMu, enc)
+					if err != nil {
+						logVerbose("Agent %s: connect_response send failed conn=%s success=%v err=%v", agentAssignedID, connID, success, err)
+					} else {
+						logVerbose("Agent %s: connect_response sent conn=%s success=%v", agentAssignedID, connID, success)
+					}
+					return err
 				}
 				go func(req ConnectRequest) {
 					if req.Protocol == "udp" {
@@ -582,9 +479,13 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 							return
 						}
 						udpConns.Store(req.ConnID, conn)
+						udpWriters.Store(req.ConnID, newConnWriter(conn))
 						if err := sendConnectResponse(req.ConnID, true, ""); err != nil {
 							conn.Close()
 							udpConns.Delete(req.ConnID)
+							if w, ok := udpWriters.LoadAndDelete(req.ConnID); ok {
+								w.(*connWriter).close()
+							}
 							return
 						}
 						bufPtr := agentBufPool.Get().(*[]byte)
@@ -595,6 +496,9 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 								agentBufPool.Put(bufPtr)
 								sendDataMsg(req.ConnID, nil, true)
 								udpConns.Delete(req.ConnID)
+								if w, ok := udpWriters.LoadAndDelete(req.ConnID); ok {
+									w.(*connWriter).close()
+								}
 								return
 							}
 							sendDataMsg(req.ConnID, buf[:n], false)
@@ -611,9 +515,13 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 							return
 						}
 						targetConns.Store(req.ConnID, targetConn)
+						targetWriters.Store(req.ConnID, newConnWriter(targetConn))
 						if err := sendConnectResponse(req.ConnID, true, ""); err != nil {
 							targetConn.Close()
 							targetConns.Delete(req.ConnID)
+							if w, ok := targetWriters.LoadAndDelete(req.ConnID); ok {
+								w.(*connWriter).close()
+							}
 							return
 						}
 						bufPtr := agentBufPool.Get().(*[]byte)
@@ -624,6 +532,9 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 								agentBufPool.Put(bufPtr)
 								sendDataMsg(req.ConnID, nil, true)
 								targetConns.Delete(req.ConnID)
+								if w, ok := targetWriters.LoadAndDelete(req.ConnID); ok {
+									w.(*connWriter).close()
+								}
 								return
 							}
 							sendDataMsg(req.ConnID, buf[:n], false)
@@ -643,31 +554,33 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 					}
 					dataMsg.Data = dec
 				}
-				if value, ok := targetConns.Load(dataMsg.ConnID); ok {
-					conn := value.(net.Conn)
+				if _, ok := targetConns.Load(dataMsg.ConnID); ok {
 					if dataMsg.Close {
-						conn.Close()
-						targetConns.Delete(dataMsg.ConnID)
-					} else {
-						conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-						if _, err := conn.Write(dataMsg.Data); err != nil {
-							conn.Close()
+						if v, ok := targetConns.LoadAndDelete(dataMsg.ConnID); ok {
+							v.(net.Conn).Close()
+						}
+						if w, ok := targetWriters.LoadAndDelete(dataMsg.ConnID); ok {
+							w.(*connWriter).close()
+						}
+					} else if w, ok := targetWriters.Load(dataMsg.ConnID); ok {
+						if !w.(*connWriter).write(dataMsg.Data) {
 							targetConns.Delete(dataMsg.ConnID)
+							targetWriters.Delete(dataMsg.ConnID)
 						}
-						conn.SetWriteDeadline(time.Time{})
 					}
-				} else if value, ok := udpConns.Load(dataMsg.ConnID); ok {
-					udpConn := value.(*net.UDPConn)
+				} else if _, ok := udpConns.Load(dataMsg.ConnID); ok {
 					if dataMsg.Close {
-						udpConn.Close()
-						udpConns.Delete(dataMsg.ConnID)
-					} else {
-						udpConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-						if _, err := udpConn.Write(dataMsg.Data); err != nil {
-							udpConn.Close()
-							udpConns.Delete(dataMsg.ConnID)
+						if v, ok := udpConns.LoadAndDelete(dataMsg.ConnID); ok {
+							v.(*net.UDPConn).Close()
 						}
-						udpConn.SetWriteDeadline(time.Time{})
+						if w, ok := udpWriters.LoadAndDelete(dataMsg.ConnID); ok {
+							w.(*connWriter).close()
+						}
+					} else if w, ok := udpWriters.Load(dataMsg.ConnID); ok {
+						if !w.(*connWriter).write(dataMsg.Data) {
+							udpConns.Delete(dataMsg.ConnID)
+							udpWriters.Delete(dataMsg.ConnID)
+						}
 					}
 				} else if dataMsg.Close {
 					canceledConns.Store(dataMsg.ConnID, struct{}{})
@@ -726,7 +639,7 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 					if err != nil {
 						return
 					}
-					agentSend(yamuxClient, c, &writeMu, enc)
+					agentSend(c, &writeMu, enc)
 				}
 				go func(req ICMPProxyRequest) {
 					resp := ICMPProxyResponse{ConnID: req.ConnID}
@@ -771,7 +684,7 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 					if err != nil {
 						return
 					}
-					agentSend(yamuxClient, c, &writeMu, enc)
+					agentSend(c, &writeMu, enc)
 				}(req)
 
 			case "agent_fwd_ack":
@@ -818,64 +731,11 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 			}
 		}
 
+		c.setOnEnvelope(dispatchWSAgentMsg)
 		go func() {
-			defer close(done)
-			if yamuxClient != nil {
-				workers := make(chan struct{}, 64)
-				for {
-					stream, err := yamuxClient.AcceptStream()
-					if err != nil {
-						if !isAgentNormalCloseError(err) {
-							logVerbose("Agent: yamux accept error: %v", err)
-						}
-						return
-					}
-					workers <- struct{}{}
-					go func(s *smux.Stream) {
-						defer func() { <-workers }()
-						data, err := readSmuxFrame(s)
-						if err != nil {
-							logVerbose("Agent: yamux stream read error: %v", err)
-							return
-						}
-						dispatchWSAgentMsg(data)
-					}(stream)
-				}
-			} else {
-				var decryptFailures int
-				for {
-					_, encrypted, readErr := c.ReadMessage()
-					if readErr != nil {
-						if !websocket.IsCloseError(readErr, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-							logVerbose("Agent: read error: %v", readErr)
-						}
-						return
-					}
-					plaintext, err := decrypt(encrypted, getEncryptionKey())
-					if err != nil {
-						decryptFailures++
-						if decryptFailures >= 3 {
-							logVerbose("Agent: 3 consecutive decrypt failures, reconnecting")
-							c.Close()
-							return
-						}
-						logVerbose("Agent: decrypt error (%d/3): %v", decryptFailures, err)
-						continue
-					}
-					decryptFailures = 0
-					dispatchWSAgentMsg(plaintext)
-				}
-			}
+			<-c.closed()
+			close(done)
 		}()
-
-		if yamuxClient == nil {
-			pongWait := 90 * time.Second
-			c.SetReadDeadline(time.Now().Add(pongWait))
-			c.SetPongHandler(func(string) error {
-				c.SetReadDeadline(time.Now().Add(pongWait))
-				return nil
-			})
-		}
 
 		ticker := time.NewTicker(10 * time.Second)
 	heartbeatLoop:
@@ -884,22 +744,12 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 			case <-agentStop:
 				logVerbose("Agent: interrupt, exiting")
 				c.Close()
+				cancel()
 				return
 			case <-done:
 				logVerbose("Agent: connection lost")
 				break heartbeatLoop
 			case <-ticker.C:
-				if yamuxClient == nil {
-					writeMu.Lock()
-					c.SetWriteDeadline(time.Now().Add(10 * time.Second))
-					pingErr := c.WriteMessage(websocket.PingMessage, nil)
-					c.SetWriteDeadline(time.Time{})
-					writeMu.Unlock()
-					if pingErr != nil {
-						logVerbose("Agent: WS ping failed: %v", pingErr)
-						break heartbeatLoop
-					}
-				}
 				if agentAssignedID != "" {
 					hb := Message{Type: "heartbeat", Payload: []byte(`{}`), OriginalAgentID: agentAssignedID}
 					hbPayload, _ := json.Marshal(hb)
@@ -908,7 +758,7 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 						logVerbose("Agent: heartbeat encryption error: %v", err)
 						break heartbeatLoop
 					}
-					if err := agentSend(yamuxClient, c, &writeMu, enc); err != nil {
+					if err := agentSend(c, &writeMu, enc); err != nil {
 						logVerbose("Agent: heartbeat send failed: %v", err)
 						break heartbeatLoop
 					}
@@ -917,6 +767,7 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 		}
 		ticker.Stop()
 		c.Close()
+		cancel()
 
 		agentSideListenersLock.Lock()
 		for id, cancel := range agentSideListenerCancels {
@@ -989,12 +840,6 @@ func runAgentBind(bindAddr, keyBase64 string, agentStop <-chan struct{}) {
 func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 	defer conn.Close()
 
-	yamuxClient, yamuxErr := smux.Client(conn, agentYamuxConfig())
-	if yamuxErr != nil {
-		logVerbose("agent-bind: yamux client error: %v, using raw framing", yamuxErr)
-		yamuxClient = nil
-	}
-
 	var agentAssignedID string
 	var writeMu sync.Mutex
 
@@ -1025,7 +870,7 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 		logVerbose("agent-bind: encrypt register: %v", err)
 		return
 	}
-	if err := agentSendRaw(yamuxClient, conn, &writeMu, encrypted); err != nil {
+	if err := agentSendRaw(conn, &writeMu, encrypted); err != nil {
 		logVerbose("agent-bind: send register: %v", err)
 		return
 	}
@@ -1050,7 +895,7 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 		if err != nil {
 			return
 		}
-		agentSendRaw(yamuxClient, conn, &writeMu, enc)
+		agentSendRaw(conn, &writeMu, enc)
 	}
 
 	sendICMPResponse := func(resp ICMPResponse) {
@@ -1061,7 +906,7 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 		if err != nil {
 			return
 		}
-		agentSendRaw(yamuxClient, conn, &writeMu, enc)
+		agentSendRaw(conn, &writeMu, enc)
 	}
 
 	dispatchBindAgentMsg := func(encrypted []byte) {
@@ -1096,7 +941,9 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 				logVerbose("agent-bind: invalid dns_request: %v", err)
 				return
 			}
-			go handleAgentDNSRequest(agentAssignedID, dnsReq, &writeMu, nil, yamuxClient)
+			go handleAgentDNSRequest(agentAssignedID, dnsReq, func(encrypted []byte) error {
+				return agentSendRaw(conn, &writeMu, encrypted)
+			})
 
 		case "ping-sweep-request":
 			var req PingSweepRequest
@@ -1114,7 +961,7 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 				if err != nil {
 					return
 				}
-				agentSendRaw(yamuxClient, conn, &writeMu, enc)
+				agentSendRaw(conn, &writeMu, enc)
 			}(req)
 
 		case "start-agent-listener":
@@ -1132,7 +979,7 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 				if err != nil {
 					return
 				}
-				agentSendRaw(yamuxClient, conn, &writeMu, enc) //nolint:errcheck
+				agentSendRaw(conn, &writeMu, enc) //nolint:errcheck
 			}
 			logVerbose("agent-bind %s: starting listener port %d -> %s:%d", agentAssignedID, req.AgentListenPort, req.DestinationHost, req.DestinationPort)
 
@@ -1218,8 +1065,8 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 								continue
 							}
 						}
-						sendEnc := func(data []byte) error {
-							return agentSendRaw(yamuxClient, conn, &writeMu, data)
+						sendEnc := func(_ string, data []byte) error {
+							return agentSendRaw(conn, &writeMu, data)
 						}
 						go handleAgentClientConnection(clientConn, req.DestinationHost, req.DestinationPort, agentAssignedID, sendEnc)
 					}
@@ -1259,7 +1106,7 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 				if err != nil {
 					return err
 				}
-				return agentSendRaw(yamuxClient, conn, &writeMu, enc)
+				return agentSendRaw(conn, &writeMu, enc)
 			}
 			go func(req ConnectRequest) {
 				if req.Protocol == "udp" {
@@ -1424,7 +1271,7 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 				if err != nil {
 					return
 				}
-				agentSendRaw(yamuxClient, conn, &writeMu, enc)
+				agentSendRaw(conn, &writeMu, enc)
 			}
 			go func(req ICMPProxyRequest) {
 				resp := ICMPProxyResponse{ConnID: req.ConnID}
@@ -1469,7 +1316,7 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 				if err != nil {
 					return
 				}
-				agentSendRaw(yamuxClient, conn, &writeMu, enc)
+				agentSendRaw(conn, &writeMu, enc)
 			}(req)
 
 		case "agent_fwd_ack":
@@ -1521,42 +1368,15 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 
 	go func() {
 		defer close(done)
-		if yamuxClient != nil {
-			workers := make(chan struct{}, 64)
-			for {
-				stream, err := yamuxClient.AcceptStream()
-				if err != nil {
-					if !isAgentNormalCloseError(err) {
-						logVerbose("agent-bind: yamux accept: %v", err)
-					}
-					return
+		for {
+			data, err := readBindFrame(conn)
+			if err != nil {
+				if !isAgentNormalCloseError(err) {
+					logVerbose("agent-bind: read: %v", err)
 				}
-				workers <- struct{}{}
-				go func(s *smux.Stream) {
-					defer func() { <-workers }()
-					data, err := readSmuxFrame(s)
-					if err != nil {
-						logVerbose("agent-bind: yamux stream read error: %v", err)
-						return
-					}
-					dispatchBindAgentMsg(data)
-				}(stream)
+				return
 			}
-		} else {
-			for {
-				lenBuf := make([]byte, 4)
-				if _, err := io.ReadFull(conn, lenBuf); err != nil {
-					logVerbose("agent-bind: raw read len: %v", err)
-					return
-				}
-				msgLen := int(lenBuf[0])<<24 | int(lenBuf[1])<<16 | int(lenBuf[2])<<8 | int(lenBuf[3])
-				data := make([]byte, msgLen)
-				if _, err := io.ReadFull(conn, data); err != nil {
-					logVerbose("agent-bind: raw read data: %v", err)
-					return
-				}
-				dispatchBindAgentMsg(data)
-			}
+			dispatchBindAgentMsg(data)
 		}
 	}()
 
@@ -1580,7 +1400,7 @@ heartbeatBindLoop:
 					logVerbose("agent-bind: heartbeat encryption error: %v", err)
 					break heartbeatBindLoop
 				}
-				if err := agentSendRaw(yamuxClient, conn, &writeMu, enc); err != nil {
+				if err := agentSendRaw(conn, &writeMu, enc); err != nil {
 					logVerbose("agent-bind: heartbeat send failed: %v", err)
 					break heartbeatBindLoop
 				}
