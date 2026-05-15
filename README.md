@@ -61,7 +61,7 @@ Connect multiple agents at once and traffic is automatically routed to whichever
 | **Forwards** | TCP/UDP port forwards · Reverse port forwards (server listens, agent dials) |
 | **Discovery** | Ping · Ping sweep · TCP/UDP port scan via agent |
 | **DNS** | Intercepts DNS, resolves through agents, private and public domains |
-| **Pivoting** | Multi-hop through multiple agents (3+ hops tested) |
+| **Pivoting** | Multi-hop through multiple agents (5+ hops tested) |
 | **Transport** | QUIC/UDP outbound agents · encrypted TCP bind agents |
 | **Dashboard** | Web UI with real-time agent graph, routing table, log viewer |
 | **API** | Full REST API with token-based auth (`read`/`write`/`admin`) |
