@@ -11,31 +11,8 @@ ARCH="${3:-all}"     # amd64 | arm64 | arm | 386 | all
 
 MIN_SERVER_SIZE=8000000   # 8 MB
 MIN_AGENT_SIZE=4000000    # 4 MB
-COMPRESS="${COMPRESS:-1}"
-UPX="${UPX:-upx}"
-UPX_FLAGS="${UPX_FLAGS:---best --lzma}"
 
 mkdir -p "$DIST"
-
-compress_binary() {
-    local out="$1"
-    local before="$2"
-
-    [ "$COMPRESS" = "1" ] || return 0
-
-    if ! command -v "$UPX" >/dev/null 2>&1; then
-        echo "    WARNING: UPX not found; leaving $out uncompressed"
-        return 0
-    fi
-
-    if "$UPX" $UPX_FLAGS "$out" >/dev/null; then
-        local after
-        after=$(stat -c %s "$out" 2>/dev/null || stat -f %z "$out")
-        echo "    compressed: $((before / 1024 / 1024))M -> $((after / 1024 / 1024))M"
-    else
-        echo "    WARNING: UPX could not compress $out; leaving original binary"
-    fi
-}
 
 build() {
     local name="$1"
@@ -69,8 +46,6 @@ build() {
     else
         echo "    $out ($((size / 1024 / 1024))M)"
     fi
-
-    compress_binary "$out" "$size"
 }
 
 should_build_target() { [ "$TARGET" = "all" ] || [ "$TARGET" = "$1" ]; }
