@@ -3116,7 +3116,7 @@ func addRouteLinux(networkStr, agentIP string) error {
 	if err == nil {
 		logVerbose("Added route: %s via %s", networkStr, agentIP)
 		cleanupMu.Lock()
-		addedRoutes = append(addedRoutes, networkStr)
+		addedRoutes = append(addedRoutes, "linux:"+networkStr+"|via:"+agentIP)
 		cleanupMu.Unlock()
 		return nil
 	}
@@ -3137,7 +3137,7 @@ func addRouteLinux(networkStr, agentIP string) error {
 		logVerbose("Added route: %s dev lo (agentIP %s not a direct nexthop)", networkStr, agentIP)
 	}
 	cleanupMu.Lock()
-	addedRoutes = append(addedRoutes, networkStr)
+	addedRoutes = append(addedRoutes, "linux:"+networkStr+"|dev:lo")
 	cleanupMu.Unlock()
 	return nil
 }
@@ -3175,6 +3175,48 @@ func removeRouteFromSlice(key string) {
 	}
 }
 
+func removeLinuxTrackedRoute(key string) error {
+	routeSpec := strings.TrimPrefix(key, "linux:")
+	parts := strings.SplitN(routeSpec, "|", 2)
+	if len(parts) != 2 {
+		removeRouteFromSlice(key)
+		return nil
+	}
+	networkStr, match := parts[0], parts[1]
+	ipArgs := []string{"ip"}
+	if isIPv6Subnet(networkStr) {
+		ipArgs = []string{"ip", "-6"}
+	}
+	out, err := exec.Command(ipArgs[0], append(ipArgs[1:], "route", "show", networkStr)...).CombinedOutput()
+	if err != nil {
+		removeRouteFromSlice(key)
+		return nil
+	}
+	line := strings.TrimSpace(string(out))
+	shouldRemove := false
+	if strings.HasPrefix(match, "via:") {
+		shouldRemove = strings.Contains(line, " via "+strings.TrimPrefix(match, "via:")+" ")
+	} else if match == "dev:lo" {
+		shouldRemove = strings.Contains(line, " dev lo")
+	}
+	if !shouldRemove {
+		logVerbose("Skipping route removal for %s: current route no longer matches Rosemary-created route", networkStr)
+		removeRouteFromSlice(key)
+		return nil
+	}
+	cmd := exec.Command(ipArgs[0], append(ipArgs[1:], "route", "del", networkStr)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if !strings.Contains(string(output), "No such process") {
+			log.Printf("Failed to remove route %s: %v", networkStr, err)
+		}
+	} else {
+		logVerbose("Removed route: %s", networkStr)
+	}
+	removeRouteFromSlice(key)
+	return nil
+}
+
 func checkSkipRoute(networkStr string) bool {
 	skipKey := "skip:" + networkStr
 	cleanupMu.Lock()
@@ -3189,6 +3231,9 @@ func checkSkipRoute(networkStr string) bool {
 }
 
 func removeRoute(subnet string) error {
+	if strings.HasPrefix(subnet, "linux:") {
+		return removeLinuxTrackedRoute(subnet)
+	}
 	_, ipnet, err := net.ParseCIDR(subnet)
 	if err != nil {
 		if strings.HasPrefix(subnet, "skip:") {
