@@ -203,6 +203,21 @@ func cleanupLinuxPolicyRules() {
 	exec.Command("ip", "-6", "route", "flush", "table", "100").Run()
 }
 
+func removeLinuxRule(bin string, args []string) int {
+	removed := 0
+	for {
+		output, err := iptCmd(bin, args...).CombinedOutput()
+		if err != nil {
+			if removed == 0 && !strings.Contains(string(output), "No chain/target/match") {
+				logVerbose("Warning: failed to remove %s rule: %v - %s", bin, err, output)
+			}
+			break
+		}
+		removed++
+	}
+	return removed
+}
+
 func startTransparentProxy() {
 	if proxyStarted {
 		return
@@ -946,19 +961,19 @@ func findRoutableGateway() string {
 
 func reloadDefaultEgressRules() error {
 
-	iptCmd("iptables", "-t", "nat", "-D", "OUTPUT",
+	removeLinuxRule("iptables", []string{"-t", "nat", "-D", "OUTPUT",
 		"-p", "tcp", "!", "-d", "127.0.0.0/8",
-		"-j", "REDIRECT", "--to-port", strconv.Itoa(proxyPort)).CombinedOutput()
-	iptCmd("iptables", "-t", "mangle", "-D", "OUTPUT",
+		"-j", "REDIRECT", "--to-port", strconv.Itoa(proxyPort)})
+	removeLinuxRule("iptables", []string{"-t", "mangle", "-D", "OUTPUT",
 		"-p", "udp", "!", "-d", "127.0.0.0/8",
 		"-m", "multiport", "!", "--dports", "53,123",
-		"-j", "MARK", "--set-mark", "1").CombinedOutput()
+		"-j", "MARK", "--set-mark", "1"})
 
 	for _, subnet := range egressLocalSubnets {
-		iptCmd("iptables", "-t", "nat", "-D", "OUTPUT",
-			"-p", "tcp", "-d", subnet, "-j", "RETURN").CombinedOutput()
-		iptCmd("iptables", "-t", "mangle", "-D", "OUTPUT",
-			"-p", "udp", "-d", subnet, "-j", "RETURN").CombinedOutput()
+		removeLinuxRule("iptables", []string{"-t", "nat", "-D", "OUTPUT",
+			"-p", "tcp", "-d", subnet, "-j", "RETURN"})
+		removeLinuxRule("iptables", []string{"-t", "mangle", "-D", "OUTPUT",
+			"-p", "udp", "-d", subnet, "-j", "RETURN"})
 	}
 	egressLocalSubnets = nil
 
@@ -1221,9 +1236,18 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 	if sent == 0 {
+		if fb := queryFallbackDNS(q.Name, q.Qtype); fb != nil {
+			buildAndSendDNSReplyLinux(w, req, fb)
+			return
+		}
 		servfail()
 		return
 	}
+
+	fallbackChan := make(chan *DNSResponseMessage, 1)
+	go func() {
+		fallbackChan <- queryFallbackDNS(q.Name, q.Qtype)
+	}()
 
 	deadline := time.NewTimer(5 * time.Second)
 	defer deadline.Stop()
@@ -1232,6 +1256,11 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 	received := 0
 	for received < sent {
 		select {
+		case fb := <-fallbackChan:
+			if fb != nil && fb.RCode == dns.RcodeSuccess && len(fb.Answers) > 0 {
+				bestResponse = fb
+				goto respond
+			}
 		case resp := <-respChan:
 			received++
 			if resp.RCode == dns.RcodeSuccess && len(resp.Answers) > 0 {
