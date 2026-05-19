@@ -15,7 +15,7 @@
 
 ---
 
-Rosemary deploys lightweight agents on remote hosts and transparently intercepts traffic at the kernel level: no proxy settings, no TUN/TAP devices, no proxychains. Once an agent connects, you reach its entire network as if you were directly on it.
+Rosemary transparently intercepts traffic on remote hosts at the kernel level: no proxy settings, no TUN/TAP devices, no proxychains. You reach the entire remote network as if you were directly on it.
 
 ---
 
