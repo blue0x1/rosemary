@@ -224,13 +224,13 @@ Dashboard available at `http://server-ip:1024`: log in with your key.
 
 ```bash
 # Standard QUIC/UDP mode (agent connects to server)
-./agent-linux-amd64 -s server-ip:1024 -k YOUR_KEY
+./agent-linux-amd64 -s server-ip:2048 -k YOUR_KEY
 
 # Background mode
-./agent-linux-amd64 -b -s server-ip:1024 -k YOUR_KEY
+./agent-linux-amd64 -b -s server-ip:2048 -k YOUR_KEY
 
 # Windows
-agent-windows-amd64.exe -s server-ip:1024 -k YOUR_KEY
+agent-windows-amd64.exe -s server-ip:2048 -k YOUR_KEY
 ```
 
 Once connected, the agent's subnets are automatically routed through it.
@@ -256,13 +256,13 @@ rosemary> connect agent-ip:9001
 # Help
 Invoke-Rosemary -Help
 
-Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY
+Invoke-Rosemary -Mode agent -Server 192.168.1.10:2048 -Key YOUR_KEY
 
 Invoke-Rosemary -Mode agent-bind -Listen 0.0.0.0:9001 -Key YOUR_KEY
 
-Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY -Background
+Invoke-Rosemary -Mode agent -Server 192.168.1.10:2048 -Key YOUR_KEY -Background
 
-Invoke-Rosemary -Mode agent -Server 192.168.1.10:1024 -Key YOUR_KEY -Verbose
+Invoke-Rosemary -Mode agent -Server 192.168.1.10:2048 -Key YOUR_KEY -Verbose
 ```
 
 Check QUIC support before using PowerShell outbound mode:
