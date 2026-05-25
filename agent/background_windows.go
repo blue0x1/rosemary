@@ -1,18 +1,3 @@
-// Rosemary - Cross-platform transparent tunneling platform
-// Copyright (C) 2026 Chokri Hammedi (blue0x1)
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, version 3 of the License.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
 //go:build windows
 
 package main
@@ -22,26 +7,30 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"strings"
+	"path/filepath"
+	"syscall"
 )
 
 func runBackground(args []string) {
-	 
-	psArgs := []string{"Start-Process", "-FilePath", os.Args[0], "-WindowStyle", "Hidden"}
-	if len(args) > 0 {
-		quoted := make([]string, len(args))
-		for i, a := range args {
-			quoted[i] = `"` + strings.ReplaceAll(a, `"`, `\"`) + `"`
-		}
-		psArgs = append(psArgs, "-ArgumentList", strings.Join(quoted, ","))
+	exe, err := os.Executable()
+	if err != nil {
+		log.Fatalf("Failed to resolve executable path: %v", err)
 	}
-	cmd := exec.Command("powershell", psArgs...)
+	exe, err = filepath.Abs(exe)
+	if err != nil {
+		log.Fatalf("Failed to get absolute path: %v", err)
+	}
+	cmd := exec.Command(exe, args...)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	if err := cmd.Run(); err != nil {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000 | 0x00000200 | 0x01000000, // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB
+	}
+	if err := cmd.Start(); err != nil {
 		log.Fatalf("Failed to start background process: %v", err)
 	}
-	fmt.Println("[*] Agent started in background")
+	fmt.Printf("[*] Agent started in background (PID %d)\n", cmd.Process.Pid)
 	os.Exit(0)
 }

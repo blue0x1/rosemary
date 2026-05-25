@@ -1319,7 +1319,7 @@ func main() {
 	if *background {
 		var args []string
 		for _, a := range os.Args[1:] {
-			if a == "-b" || a == "--b" {
+			if a == "-b" || a == "--b" || strings.HasPrefix(a, "-b=") || strings.HasPrefix(a, "--b=") {
 				continue
 			}
 			args = append(args, a)
