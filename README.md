@@ -88,6 +88,9 @@ Connect multiple agents at once and traffic is automatically routed to whichever
 
 ## Screenshots
 
+<details>
+<summary>Show screenshots</summary>
+
 ### Dashboard | Agent Graph View
 
 *Interactive network graph showing connected agents and their relationships*
@@ -185,7 +188,7 @@ The extension icon will appear in your browser toolbar.
 
 <img width="489" height="625" alt="image" src="https://raw.githubusercontent.com/blue0x1/rosemary/_assets/assets/images/image-13.png" />
 
-
+</details>
 
 ---
 
