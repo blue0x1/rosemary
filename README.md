@@ -9,8 +9,8 @@
 [![Stars](https://img.shields.io/github/stars/blue0x1/rosemary)](https://github.com/blue0x1/rosemary/stargazers)
 
 <br>
-<img width="3124" height="1130" alt="logo-dark" src="https://raw.githubusercontent.com/blue0x1/rosemary/_assets/assets/images/logo-dark.png" />
 
+<img width="3124" height="1308" alt="logo-dark" src="https://github.com/user-attachments/assets/7d59650d-3c84-4f38-8245-2d012c8da7a9" />
 
 
 ---
