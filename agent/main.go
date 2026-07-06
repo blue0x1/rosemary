@@ -231,6 +231,7 @@ type DNSRequestMessage struct {
 	RequestID uint16 `json:"request_id"`
 	Domain    string `json:"domain"`
 	QType     uint16 `json:"qtype"`
+	DNSServer string `json:"dns_server,omitempty"`
 }
 
 type DNSAnswer struct {
@@ -817,6 +818,117 @@ func tcpPing(ipStr string, timeout time.Duration) (bool, time.Duration) {
 
 var publicDNSServers = []string{"8.8.8.8:53", "1.1.1.1:53", "8.8.4.4:53"}
 
+var knownSubnets atomic.Value
+
+func setKnownSubnets(subnets []string) {
+	cp := make([]string, len(subnets))
+	copy(cp, subnets)
+	knownSubnets.Store(cp)
+}
+
+func getKnownSubnets() []string {
+	v, _ := knownSubnets.Load().([]string)
+	return v
+}
+
+type dnsDiscoveryEntry struct {
+	servers []string
+	probed  bool
+}
+
+var (
+	dnsDiscoveryCache    = make(map[string]*dnsDiscoveryEntry)
+	dnsDiscoveryCacheMu  sync.Mutex
+	dnsDiscoveryMaxHosts = 256
+)
+
+func probeDNSHost(ip string, timeout time.Duration) bool {
+	msg := new(dns.Msg)
+	msg.SetQuestion("www.google.com.", dns.TypeA)
+	c := &dns.Client{Net: "udp", Timeout: timeout}
+	resp, _, err := c.Exchange(msg, net.JoinHostPort(ip, "53"))
+	return err == nil && resp != nil
+}
+
+func discoverDNSServersInSubnet(subnet string) []string {
+	dnsDiscoveryCacheMu.Lock()
+	if entry, ok := dnsDiscoveryCache[subnet]; ok {
+		dnsDiscoveryCacheMu.Unlock()
+		return entry.servers
+	}
+	dnsDiscoveryCache[subnet] = &dnsDiscoveryEntry{probed: true}
+	dnsDiscoveryCacheMu.Unlock()
+
+	var found []string
+	_, ipnet, err := net.ParseCIDR(subnet)
+	if err == nil {
+		if v4 := ipnet.IP.To4(); v4 != nil {
+			ones, bits := ipnet.Mask.Size()
+			hostBits := uint(bits - ones)
+			count := uint32(1) << hostBits
+			if int(count) <= dnsDiscoveryMaxHosts {
+				startIP := binary.BigEndian.Uint32(v4)
+				type job struct{ ip string }
+				jobs := make(chan job, count)
+				resCh := make(chan string, count)
+				var wg sync.WaitGroup
+				workers := 64
+				if int(count) < workers {
+					workers = int(count)
+				}
+				if workers < 1 {
+					workers = 1
+				}
+				worker := func() {
+					defer wg.Done()
+					for j := range jobs {
+						if probeDNSHost(j.ip, 400*time.Millisecond) {
+							resCh <- j.ip
+						}
+					}
+				}
+				wg.Add(workers)
+				for i := 0; i < workers; i++ {
+					go worker()
+				}
+				for i := uint32(1); i < count-1; i++ {
+					ipVal := startIP + i
+					ipBytes := make(net.IP, 4)
+					binary.BigEndian.PutUint32(ipBytes, ipVal)
+					jobs <- job{ip: ipBytes.String()}
+				}
+				close(jobs)
+				go func() { wg.Wait(); close(resCh) }()
+				for ip := range resCh {
+					found = append(found, ip)
+				}
+				sort.Strings(found)
+			} else {
+				logVerbose("Agent: skipping DNS auto-discovery on %s, too large (%d hosts)", subnet, count)
+			}
+		}
+	}
+
+	dnsDiscoveryCacheMu.Lock()
+	dnsDiscoveryCache[subnet] = &dnsDiscoveryEntry{servers: found, probed: true}
+	dnsDiscoveryCacheMu.Unlock()
+
+	if len(found) > 0 {
+		logVerbose("Agent: auto-discovered DNS server(s) on %s: %v", subnet, found)
+	} else {
+		logVerbose("Agent: no DNS server found on %s during auto-discovery", subnet)
+	}
+	return found
+}
+
+func discoverDNSServersForKnownSubnets() []string {
+	var all []string
+	for _, subnet := range getKnownSubnets() {
+		all = append(all, discoverDNSServersInSubnet(subnet)...)
+	}
+	return all
+}
+
 func answersFromDNSResponse(resp *dns.Msg, qtype uint16) []DNSAnswer {
 	var answers []DNSAnswer
 	for _, rr := range resp.Answer {
@@ -918,6 +1030,30 @@ func systemDNSServers() []string {
 func handleAgentDNSRequest(agentID string, msg DNSRequestMessage, sendEnc func([]byte) error) {
 	var answers []DNSAnswer
 	domain := strings.TrimSuffix(msg.Domain, ".")
+
+	if msg.DNSServer != "" {
+		if authAnswers := queryDNSServers(msg.Domain, msg.QType, []string{msg.DNSServer}); len(authAnswers) > 0 {
+			logVerbose("Agent: resolved %s via explicit DNS server %s", domain, msg.DNSServer)
+			answers = authAnswers
+		} else {
+			logVerbose("Agent: explicit DNS server %s failed for %s, falling back", msg.DNSServer, domain)
+		}
+	}
+
+	if len(answers) == 0 {
+		if discovered := discoverDNSServersForKnownSubnets(); len(discovered) > 0 {
+			if autoAnswers := queryDNSServers(msg.Domain, msg.QType, discovered); len(autoAnswers) > 0 {
+				logVerbose("Agent: resolved %s via auto-discovered DNS server(s) %v", domain, discovered)
+				answers = autoAnswers
+			}
+		}
+	}
+
+	if len(answers) > 0 {
+		sendAgentDNSResponse(agentID, msg.RequestID, answers, 0, sendEnc)
+		return
+	}
+
 	switch msg.QType {
 	case dns.TypeA:
 		ips, err := net.LookupIP(domain)
@@ -965,7 +1101,11 @@ func handleAgentDNSRequest(agentID string, msg DNSRequestMessage, sendEnc func([
 	if len(answers) == 0 {
 		rcode = 3
 	}
-	resp := DNSResponseMessage{RequestID: msg.RequestID, Answers: answers, RCode: rcode}
+	sendAgentDNSResponse(agentID, msg.RequestID, answers, rcode, sendEnc)
+}
+
+func sendAgentDNSResponse(agentID string, requestID uint16, answers []DNSAnswer, rcode int, sendEnc func([]byte) error) {
+	resp := DNSResponseMessage{RequestID: requestID, Answers: answers, RCode: rcode}
 	payload, _ := json.Marshal(resp)
 	outMsg := Message{Type: "dns_response", Payload: payload, OriginalAgentID: agentID}
 	outPayload, _ := json.Marshal(outMsg)

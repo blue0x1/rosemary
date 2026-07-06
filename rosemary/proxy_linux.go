@@ -871,49 +871,98 @@ func startUDPProxyV6() {
 
 var fallbackPublicDNS = []string{"8.8.8.8", "1.1.1.1", "8.8.4.4"}
 
+func fallbackServerUsable(server string) bool {
+	ip := net.ParseIP(strings.TrimSuffix(server, "%"))
+	if ip == nil {
+		if host, _, ok := strings.Cut(server, "%"); ok {
+			ip = net.ParseIP(host)
+		}
+	}
+	if ip == nil {
+		return false
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLoopback() || ip.IsUnspecified() {
+		return false
+	}
+	return true
+}
+
 func queryFallbackDNS(domain string, qtype uint16) *DNSResponseMessage {
+	var servers []string
+	for _, s := range getSavedSystemDNSServers() {
+		if fallbackServerUsable(s) {
+			servers = append(servers, s)
+		}
+	}
+	servers = append(servers, fallbackPublicDNS...)
+
 	tryServer := func(server string) *DNSResponseMessage {
-		c := &dns.Client{Net: "tcp", Timeout: 3 * time.Second}
 		msg := new(dns.Msg)
 		msg.SetQuestion(domain, qtype)
 		msg.RecursionDesired = true
-		resp, _, err := c.Exchange(msg, net.JoinHostPort(server, "53"))
-		if err != nil || resp == nil {
-			return nil
-		}
-		result := &DNSResponseMessage{RCode: resp.Rcode}
-		for _, rr := range resp.Answer {
-			ans := DNSAnswer{Name: rr.Header().Name, Type: rr.Header().Rrtype, TTL: rr.Header().Ttl}
-			switch v := rr.(type) {
-			case *dns.A:
-				ans.Data = v.A.String()
-			case *dns.AAAA:
-				ans.Data = v.AAAA.String()
-			case *dns.CNAME:
-				ans.Data = v.Target
-			default:
+		target := net.JoinHostPort(server, "53")
+
+		for _, netw := range []string{"udp", "tcp"} {
+			c := &dns.Client{Net: netw, Timeout: 1500 * time.Millisecond}
+			resp, _, err := c.Exchange(msg, target)
+			if err != nil || resp == nil {
 				continue
 			}
-			result.Answers = append(result.Answers, ans)
-		}
-		if resp.Rcode == dns.RcodeSuccess && len(result.Answers) > 0 {
-			return result
+			if resp.Truncated && netw == "udp" {
+				continue // retry over TCP
+			}
+			result := &DNSResponseMessage{RCode: resp.Rcode}
+			for _, rr := range resp.Answer {
+				ans := DNSAnswer{Name: rr.Header().Name, Type: rr.Header().Rrtype, TTL: rr.Header().Ttl}
+				switch v := rr.(type) {
+				case *dns.A:
+					ans.Data = v.A.String()
+				case *dns.AAAA:
+					ans.Data = v.AAAA.String()
+				case *dns.CNAME:
+					ans.Data = v.Target
+				default:
+					continue
+				}
+				result.Answers = append(result.Answers, ans)
+			}
+			if resp.Rcode == dns.RcodeSuccess && len(result.Answers) > 0 {
+				return result
+			}
+			return nil
 		}
 		return nil
 	}
 
-	for _, server := range getSavedSystemDNSServers() {
-		if r := tryServer(server); r != nil {
-			return r
-		}
+	if len(servers) == 0 {
+		return nil
 	}
 
-	for _, server := range fallbackPublicDNS {
-		if r := tryServer(server); r != nil {
-			return r
+	type raced struct {
+		result *DNSResponseMessage
+		order  int
+	}
+	resultsCh := make(chan raced, len(servers))
+	for i, server := range servers {
+		go func(i int, server string) {
+			resultsCh <- raced{result: tryServer(server), order: i}
+		}(i, server)
+	}
+
+	best := raced{order: len(servers)}
+	deadline := time.After(2 * time.Second)
+waitLoop:
+	for received := 0; received < len(servers); received++ {
+		select {
+		case r := <-resultsCh:
+			if r.result != nil && r.order < best.order {
+				best = r
+			}
+		case <-deadline:
+			break waitLoop
 		}
 	}
-	return nil
+	return best.result
 }
 
 var egressDefaultRouteGW string
@@ -1194,6 +1243,7 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 	servfail := func() {
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeServerFailure)
+		m.RecursionAvailable = true
 		_ = w.WriteMsg(m)
 	}
 
@@ -1225,11 +1275,10 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 	pendingDNSRequests.Store(reqID, respChan)
 	defer pendingDNSRequests.Delete(reqID)
 
-	dnsReq := DNSRequestMessage{RequestID: reqID, Domain: q.Name, QType: q.Qtype}
-	payload, _ := json.Marshal(dnsReq)
-
 	sent := 0
 	for _, id := range agents {
+		dnsReq := DNSRequestMessage{RequestID: reqID, Domain: q.Name, QType: q.Qtype, DNSServer: dnsServerForAgent(id)}
+		payload, _ := json.Marshal(dnsReq)
 		msg := Message{Type: "dns_request", Payload: payload, TargetAgentID: id}
 		if err := sendControlMessageToAgent(id, msg); err == nil {
 			sent++
@@ -1277,10 +1326,14 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 
 respond:
 	if bestResponse == nil || (bestResponse.RCode != dns.RcodeSuccess && len(bestResponse.Answers) == 0) {
-
-		if fb := queryFallbackDNS(q.Name, q.Qtype); fb != nil {
-			bestResponse = fb
-		} else if getDefaultEgressAgent() != "" {
+		select {
+		case fb := <-fallbackChan:
+			if fb != nil {
+				bestResponse = fb
+			}
+		case <-time.After(2500 * time.Millisecond):
+		}
+		if (bestResponse == nil || (bestResponse.RCode != dns.RcodeSuccess && len(bestResponse.Answers) == 0)) && getDefaultEgressAgent() != "" {
 			if result := queryEgressDNS(q.Name, q.Qtype); result != nil {
 				bestResponse = result
 			}
@@ -1297,6 +1350,7 @@ func buildAndSendDNSReplyLinux(w dns.ResponseWriter, req *dns.Msg, bestResponse 
 	reply := new(dns.Msg)
 	reply.SetReply(req)
 	reply.Rcode = bestResponse.RCode
+	reply.RecursionAvailable = true
 	for _, ans := range bestResponse.Answers {
 		hdr := dns.RR_Header{
 			Name:   ans.Name,

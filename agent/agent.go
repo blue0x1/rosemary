@@ -180,6 +180,7 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 
 		userInfo, _ := user.Current()
 		hostname, _ := os.Hostname()
+		setKnownSubnets(subnets)
 		registerMsg := RegisterMessage{
 			Subnets:  subnets,
 			OS:       runtime.GOOS,
@@ -850,6 +851,7 @@ func runAgentBindSession(conn net.Conn, agentStop <-chan struct{}) {
 	}
 	userInfo, _ := user.Current()
 	hostname, _ := os.Hostname()
+	setKnownSubnets(subnets)
 	registerMsg := RegisterMessage{
 		Subnets:  subnets,
 		OS:       runtime.GOOS,

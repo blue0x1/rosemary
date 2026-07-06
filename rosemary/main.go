@@ -557,6 +557,9 @@ var (
 	disabledSubnets   = make(map[string]bool)
 	disabledSubnetsMu sync.Mutex
 
+	subnetDNSServers   = make(map[string]string)
+	subnetDNSServersMu sync.RWMutex
+
 	subnetOwners      = make(map[string][]string)
 	subnetOwnersMu    sync.Mutex
 	pendingConns      sync.Map
@@ -1022,6 +1025,7 @@ type DNSRequestMessage struct {
 	RequestID uint16 `json:"request_id"`
 	Domain    string `json:"domain"`
 	QType     uint16 `json:"qtype"`
+	DNSServer string `json:"dns_server,omitempty"`
 }
 
 type DNSAnswer struct {
@@ -2694,6 +2698,53 @@ func captureSystemDNSServers() {
 	}
 }
 
+func setSubnetDNSServer(subnet, server string) {
+	subnetDNSServersMu.Lock()
+	defer subnetDNSServersMu.Unlock()
+	subnetDNSServers[subnet] = server
+}
+
+func clearSubnetDNSServer(subnet string) bool {
+	subnetDNSServersMu.Lock()
+	defer subnetDNSServersMu.Unlock()
+	_, existed := subnetDNSServers[subnet]
+	delete(subnetDNSServers, subnet)
+	return existed
+}
+
+func getSubnetDNSServer(subnet string) (string, bool) {
+	subnetDNSServersMu.RLock()
+	defer subnetDNSServersMu.RUnlock()
+	s, ok := subnetDNSServers[subnet]
+	return s, ok
+}
+
+func listSubnetDNSServers() map[string]string {
+	subnetDNSServersMu.RLock()
+	defer subnetDNSServersMu.RUnlock()
+	cp := make(map[string]string, len(subnetDNSServers))
+	for k, v := range subnetDNSServers {
+		cp[k] = v
+	}
+	return cp
+}
+
+func dnsServerForAgent(agentID string) string {
+	connLock.Lock()
+	info, ok := connections[agentID]
+	var subnets []string
+	if ok {
+		subnets = append(subnets, info.Subnets...)
+	}
+	connLock.Unlock()
+	for _, subnet := range subnets {
+		if server, ok := getSubnetDNSServer(subnet); ok && server != "" {
+			return server
+		}
+	}
+	return ""
+}
+
 func getSavedSystemDNSServers() []string {
 	savedSystemDNSServersMu.RLock()
 	defer savedSystemDNSServersMu.RUnlock()
@@ -3707,7 +3758,7 @@ func startREPL() {
 		readline.PcItem("help"),
 		readline.PcItem("agents", readline.PcItemDynamic(agentIDs)),
 		readline.PcItem("egress", readline.PcItemDynamic(agentIDs), readline.PcItem("none")),
-		readline.PcItem("routes", readline.PcItem("enable"), readline.PcItem("disable")),
+		readline.PcItem("routes", readline.PcItem("enable"), readline.PcItem("disable"), readline.PcItem("dns")),
 		readline.PcItem("forwards"),
 		readline.PcItem("forward", readline.PcItem("add"), readline.PcItem("del")),
 		readline.PcItem("rforward", readline.PcItem("add"), readline.PcItem("del"), readline.PcItem("list")),

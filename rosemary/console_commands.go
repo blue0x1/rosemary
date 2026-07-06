@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net"
 	"os"
 	"runtime"
 	"strconv"
@@ -129,7 +130,7 @@ func consoleCmdHelp(parts []string, out *strings.Builder) {
 	helpTopics := map[string]string{
 		"agents":      "agents\n  List all connected agents with OS, hostname, subnets, last seen, and internet status.\n\nagents <agent-id>\n  Show full details for a specific agent including all subnets, tag, and connection time.",
 		"tag":         "tag <agent-id> <label>\n  Set a display tag for an agent.\n  Example:\n    tag agent-2 dc-east\n\ntag <agent-id> \"\"\n  Clear the tag for an agent.",
-		"routes":      "routes [list]\n  List all registered subnets with agent and enabled/disabled state.\n\nroutes enable <subnet>\n  Re-enable routing for a disabled subnet.\n\nroutes disable <subnet>\n  Disable routing for a subnet without removing it from the table.",
+		"routes":      "routes [list]\n  List all registered subnets with agent, enabled/disabled state, and DNS override.\n\nroutes enable <subnet>\n  Re-enable routing for a disabled subnet.\n\nroutes disable <subnet>\n  Disable routing for a subnet without removing it from the table.\n\nroutes dns <subnet> <dns-ip>[:port]\n  Resolve domains served by this subnet's agent against <dns-ip> first (e.g. an\n  internal domain controller), instead of relying on the agent host's own OS\n  resolver, which usually has no visibility into private zones it only routes\n  traffic to.\n\nroutes dns <subnet> clear\n  Remove the DNS override for a subnet.",
 		"forwards":    "forwards\n  List all active port forwards.",
 		"forward":     "forward add <local-port> <agent-id> <target-host> <target-port> [tcp|udp]\n  Add a port forward: agent listens on local-port and proxies to target.\n  Protocol defaults to tcp. Example:\n    forward add 8080 agent-1 192.168.1.10 80\n    forward add 5353 agent-1 8.8.8.8 53 udp\n\nforward del <listener-id>\n  Remove a port forward by its ID.",
 		"rforward":    "rforward add <listen-port> <agent-id> <target-host> <target-port>\n  Add a REVERSE port forward: server listens on listen-port, when a client\n  connects the agent dials target-host:target-port and bridges the connection.\n  Useful when the agent is on an isolated host. Example:\n    rforward add 13389 agent-2 127.0.0.1 3389\n  Then: xfreerdp /v:server-ip:13389\n\nrforward del <listener-id>\n  Stop a reverse forward by its ID.\n\nrforward list\n  List active reverse forwards.",
@@ -167,7 +168,7 @@ func consoleCmdHelp(parts []string, out *strings.Builder) {
 
 	out.WriteString(colorBoldWhite + "Commands" + colorReset + " (use '" + colorBoldCyan + "help <command>" + colorReset + "' for details):\n")
 	out.WriteString("  " + colorBoldCyan + "agents" + colorReset + "               - list connected agents\n")
-	out.WriteString("  " + colorBoldCyan + "routes" + colorReset + "               - list routes; enable/disable subnets\n")
+	out.WriteString("  " + colorBoldCyan + "routes" + colorReset + "               - list routes; enable/disable subnets; set per-subnet DNS server\n")
 	out.WriteString("  " + colorBoldCyan + "forwards" + colorReset + "             - list active port forwards\n")
 	out.WriteString("  " + colorBoldCyan + "forward" + colorReset + " add|del      - add/remove port forward (tcp or udp)\n")
 	out.WriteString("  " + colorBoldCyan + "rforward" + colorReset + " add|del|list- reverse port forward (server listens, agent dials)\n")
@@ -364,8 +365,10 @@ func consoleCmdRoutes(parts []string, out *strings.Builder) {
 		consoleCmdRoutesToggle(sub, args, out)
 	case "default":
 		consoleCmdRoutesDefault(args, out)
+	case "dns":
+		consoleCmdRoutesDNS(args, out)
 	default:
-		out.WriteString(colorBoldCyan + "Usage: " + colorReset + colorGreen + "routes [list] | routes enable <subnet> | routes disable <subnet> | routes default [<agentID>|off]\n" + colorReset)
+		out.WriteString(colorBoldCyan + "Usage: " + colorReset + colorGreen + "routes [list] | routes enable <subnet> | routes disable <subnet> | routes default [<agentID>|off] | routes dns <subnet> <dns-ip>|clear\n" + colorReset)
 	}
 }
 
@@ -374,7 +377,7 @@ func consoleCmdRoutesList(out *strings.Builder) {
 	if len(routingTable.routes) == 0 {
 		out.WriteString(colorYellow + "No routes." + colorReset + "\n")
 	} else {
-		cols := []consoleColumn{{"Subnet", 24}, {"Agent", 18}, {"State", 10}}
+		cols := []consoleColumn{{"Subnet", 24}, {"Agent", 18}, {"State", 10}, {"DNS Server", 16}}
 		tableHeader(out, cols)
 		for subnet, agentID := range routingTable.routes {
 			disabledSubnetsMu.Lock()
@@ -383,13 +386,61 @@ func consoleCmdRoutesList(out *strings.Builder) {
 				state = colorBoldRed + "DISABLED" + colorReset
 			}
 			disabledSubnetsMu.Unlock()
+			dnsServer := "-"
+			if server, ok := getSubnetDNSServer(subnet); ok && server != "" {
+				dnsServer = server
+			}
 			tableColorRow(out, cols,
 				colorYellow+subnet+colorReset,
 				colorCyan+agentID+colorReset,
-				state)
+				state,
+				colorCyan+dnsServer+colorReset)
 		}
 	}
 	routingTable.RUnlock()
+}
+
+func consoleCmdRoutesDNS(args []string, out *strings.Builder) {
+	if len(args) < 3 {
+		out.WriteString(colorBoldCyan + "Usage: " + colorReset + colorGreen + "routes dns <subnet> <dns-ip>[:port] | routes dns <subnet> clear\n" + colorReset)
+		return
+	}
+	subnet := args[1]
+	value := args[2]
+
+	routingTable.RLock()
+	_, exists := routingTable.routes[subnet]
+	routingTable.RUnlock()
+	if !exists {
+		out.WriteString(fmt.Sprintf(colorBoldRed+"[-]"+colorReset+" Subnet %s not found in routing table.\n", subnet))
+		return
+	}
+
+	if value == "clear" || value == "off" {
+		if clearSubnetDNSServer(subnet) {
+			log.Printf("[CLI] DNS override for subnet %s cleared", subnet)
+			appendServerLog(fmt.Sprintf("[+] DNS override for subnet %s cleared", subnet))
+			out.WriteString(fmt.Sprintf(colorBoldGreen+"[+]"+colorReset+" DNS override for %s%s%s cleared.\n", colorYellow, subnet, colorReset))
+		} else {
+			out.WriteString(fmt.Sprintf(colorBoldYellow+"[!]"+colorReset+" Subnet %s%s%s had no DNS override set.\n", colorYellow, subnet, colorReset))
+		}
+		return
+	}
+
+	host := value
+	if h, _, err := net.SplitHostPort(value); err == nil {
+		host = h
+	}
+	if net.ParseIP(host) == nil {
+		out.WriteString(fmt.Sprintf(colorBoldRed+"[-]"+colorReset+" %s is not a valid IP address.\n", value))
+		return
+	}
+
+	setSubnetDNSServer(subnet, value)
+	log.Printf("[CLI] DNS for subnet %s set to %s", subnet, value)
+	appendServerLog(fmt.Sprintf("[+] DNS for subnet %s set to %s", subnet, value))
+	out.WriteString(fmt.Sprintf(colorBoldGreen+"[+]"+colorReset+" Domains served by %s%s%s will now be resolved via %s%s%s first.\n",
+		colorYellow, subnet, colorReset, colorCyan, value, colorReset))
 }
 
 func consoleCmdRoutesToggle(sub string, args []string, out *strings.Builder) {
