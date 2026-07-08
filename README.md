@@ -15,7 +15,7 @@
 
 ---
 
-Rosemary transparently intercepts traffic on remote hosts at the kernel level: no proxy settings, no TUN/TAP devices, no proxychains. You reach the entire remote network as if you were directly on it.
+Rosemary transparently intercepts traffic on remote hosts at the kernel level: no proxy settings, no TUN/TAP devices, no proxychains. Agents connect back to the server over QUIC. You reach the entire remote network as if you were directly on it.
 
 ---
 
@@ -39,7 +39,7 @@ Rosemary transparently intercepts traffic on remote hosts at the kernel level: n
 
 ## How It Works
 
-Run the **server** on your machine and deploy an **agent** on any remote host. The agent connects back, the server installs kernel-level interception rules for the agent's subnets, and from that point all traffic to those subnets is transparently forwarded through the agent, no proxy config, no TUN device, no changes to your applications.
+Run the **server** on your machine and deploy an **agent** on any remote host. The agent connects back over QUIC, the server installs kernel-level interception rules for the agent's subnets, and from that point all traffic to those subnets, including DNS, is transparently forwarded through the agent, no proxy config, no TUN device, no DNS settings to change, no changes to your applications.
 
 ```
 curl http://192.168.1.50   ───►  agent dials 192.168.1.50 and bridges it back
