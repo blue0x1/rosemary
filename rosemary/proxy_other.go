@@ -112,7 +112,7 @@ func stopSocksProxy(id string, out *strings.Builder) {
 }
 
 func notifyShutdownSignals(c chan<- os.Signal) {
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 }
 func stopProxies()                   {}            // no-op on unsupported platforms
 func setBSDLoopbackRouting()         {}            // no-op on unsupported platforms
