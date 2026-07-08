@@ -223,8 +223,10 @@ type PingSweepRequest struct {
 }
 
 type PingSweepResult struct {
-	IP  string `json:"ip"`
-	RTT int64  `json:"rtt"`
+	IP       string `json:"ip"`
+	RTT      int64  `json:"rtt"`
+	Hostname string `json:"hostname,omitempty"`
+	IsDNS    bool   `json:"is_dns,omitempty"`
 }
 
 type PingSweepResponse struct {
@@ -1029,10 +1031,13 @@ type DNSRequestMessage struct {
 }
 
 type DNSAnswer struct {
-	Name string `json:"name"`
-	Type uint16 `json:"type"`
-	TTL  uint32 `json:"ttl"`
-	Data string `json:"data"`
+	Name     string `json:"name"`
+	Type     uint16 `json:"type"`
+	TTL      uint32 `json:"ttl"`
+	Data     string `json:"data"`
+	Priority uint16 `json:"priority,omitempty"`
+	Weight   uint16 `json:"weight,omitempty"`
+	Port     uint16 `json:"port,omitempty"`
 }
 
 type DNSResponseMessage struct {
@@ -4062,7 +4067,6 @@ func startShutdownHandler(sigChan <-chan os.Signal) {
 		<-sigChan
 		log.Println("Interrupt received, shutting down...")
 		notifyDashboardShutdown()
-		time.Sleep(3 * time.Second)
 		done := make(chan struct{})
 		go func() { cleanupAll(); close(done) }()
 		select {

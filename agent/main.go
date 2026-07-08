@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -40,6 +41,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf16"
 
 	"github.com/miekg/dns"
 	"golang.org/x/net/icmp"
@@ -218,8 +220,10 @@ type PingSweepRequest struct {
 }
 
 type PingSweepResult struct {
-	IP  string `json:"ip"`
-	RTT int64  `json:"rtt"`
+	IP       string `json:"ip"`
+	RTT      int64  `json:"rtt"`
+	Hostname string `json:"hostname,omitempty"`
+	IsDNS    bool   `json:"is_dns,omitempty"`
 }
 
 type PingSweepResponse struct {
@@ -235,10 +239,13 @@ type DNSRequestMessage struct {
 }
 
 type DNSAnswer struct {
-	Name string `json:"name"`
-	Type uint16 `json:"type"`
-	TTL  uint32 `json:"ttl"`
-	Data string `json:"data"`
+	Name     string `json:"name"`
+	Type     uint16 `json:"type"`
+	TTL      uint32 `json:"ttl"`
+	Data     string `json:"data"`
+	Priority uint16 `json:"priority,omitempty"`
+	Weight   uint16 `json:"weight,omitempty"`
+	Port     uint16 `json:"port,omitempty"`
 }
 
 type DNSResponseMessage struct {
@@ -691,6 +698,15 @@ func pingOnce(ipStr string, timeout time.Duration) (bool, float64) {
 	}
 }
 
+func dnsProbe(ipStr string, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ipStr, "53"), timeout)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
 func doPingSweep(req PingSweepRequest) []PingSweepResult {
 	var results []PingSweepResult
 	_, ipnet, err := net.ParseCIDR(req.Subnet)
@@ -727,10 +743,22 @@ func doPingSweep(req PingSweepRequest) []PingSweepResult {
 	worker := func() {
 		defer wg.Done()
 		for j := range jobs {
-			alive, rtt := tcpPing(j.ipStr, timeout)
-			if alive {
-				resCh <- PingSweepResult{IP: j.ipStr, RTT: int64(rtt.Milliseconds())}
-			}
+			func() {
+				defer func() { recover() }()
+				alive, rtt := tcpPing(j.ipStr, timeout)
+				if alive {
+					hostname := nbtNameQuery(j.ipStr, 500*time.Millisecond)
+					if hostname == "" {
+						hostname = smbHostnameQuery(j.ipStr, 800*time.Millisecond)
+					}
+					dnsTimeout := 500 * time.Millisecond
+					if rtt*6 > dnsTimeout {
+						dnsTimeout = rtt * 6
+					}
+					isDNS := dnsProbe(j.ipStr, dnsTimeout)
+					resCh <- PingSweepResult{IP: j.ipStr, RTT: int64(rtt.Milliseconds()), Hostname: hostname, IsDNS: isDNS}
+				}
+			}()
 		}
 	}
 	wg.Add(workers)
@@ -752,6 +780,205 @@ func doPingSweep(req PingSweepRequest) []PingSweepResult {
 		return bytes.Compare(net.ParseIP(results[i].IP).To4(), net.ParseIP(results[j].IP).To4()) < 0
 	})
 	return results
+}
+
+func encodeNBTName(name string) []byte {
+	padded := make([]byte, 16)
+	copy(padded, name)
+	encoded := make([]byte, 32)
+	for i, b := range padded {
+		encoded[i*2] = 'A' + (b >> 4)
+		encoded[i*2+1] = 'A' + (b & 0x0f)
+	}
+	return encoded
+}
+
+func nbtNameQuery(ipStr string, timeout time.Duration) string {
+	conn, err := net.DialTimeout("udp", net.JoinHostPort(ipStr, "137"), timeout)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+
+	name := encodeNBTName("*")
+	packet := make([]byte, 0, 50)
+	packet = append(packet, 0x13, 0x37)
+	packet = append(packet, 0x00, 0x00)
+	packet = append(packet, 0x00, 0x01)
+	packet = append(packet, 0x00, 0x00)
+	packet = append(packet, 0x00, 0x00)
+	packet = append(packet, 0x00, 0x00)
+	packet = append(packet, 0x20)
+	packet = append(packet, name...)
+	packet = append(packet, 0x00)
+	packet = append(packet, 0x00, 0x21)
+	packet = append(packet, 0x00, 0x01)
+
+	if _, err := conn.Write(packet); err != nil {
+		return ""
+	}
+
+	resp := make([]byte, 1024)
+	n, err := conn.Read(resp)
+	if err != nil || n < 57 {
+		return ""
+	}
+
+	numNames := int(resp[56])
+	offset := 57
+	for i := 0; i < numNames; i++ {
+		if offset+18 > n {
+			break
+		}
+		rawName := resp[offset : offset+15]
+		suffix := resp[offset+15]
+		flags := uint16(resp[offset+16])<<8 | uint16(resp[offset+17])
+		isGroup := flags&0x8000 != 0
+		if suffix == 0x00 && !isGroup {
+			return strings.TrimRight(string(rawName), " ")
+		}
+		offset += 18
+	}
+	return ""
+}
+
+func smbWriteFrame(conn net.Conn, body []byte) error {
+	frame := make([]byte, 4+len(body))
+	frame[0] = 0
+	frame[1] = byte(len(body) >> 16)
+	frame[2] = byte(len(body) >> 8)
+	frame[3] = byte(len(body))
+	copy(frame[4:], body)
+	_, err := conn.Write(frame)
+	return err
+}
+
+func smbReadFrame(conn net.Conn) ([]byte, error) {
+	hdr := make([]byte, 4)
+	if _, err := io.ReadFull(conn, hdr); err != nil {
+		return nil, err
+	}
+	length := int(hdr[1])<<16 | int(hdr[2])<<8 | int(hdr[3])
+	if length <= 0 || length > 1<<20 {
+		return nil, fmt.Errorf("bad smb frame length %d", length)
+	}
+	body := make([]byte, length)
+	if _, err := io.ReadFull(conn, body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+func smb2Header(command uint16, messageID uint64) []byte {
+	h := make([]byte, 64)
+	copy(h[0:4], []byte{0xFE, 'S', 'M', 'B'})
+	binary.LittleEndian.PutUint16(h[4:6], 64)
+	binary.LittleEndian.PutUint16(h[12:14], command)
+	binary.LittleEndian.PutUint16(h[14:16], 1)
+	binary.LittleEndian.PutUint64(h[24:32], messageID)
+	return h
+}
+
+func ntlmType1Message() []byte {
+	msg := make([]byte, 32)
+	copy(msg[0:8], []byte("NTLMSSP\x00"))
+	binary.LittleEndian.PutUint32(msg[8:12], 1)
+	binary.LittleEndian.PutUint32(msg[12:16], 0xa0088215)
+	return msg
+}
+
+func parseNTLMTargetInfo(challenge []byte) map[uint16][]byte {
+	pairs := make(map[uint16][]byte)
+	if len(challenge) < 48 || string(challenge[0:8]) != "NTLMSSP\x00" {
+		return pairs
+	}
+	targetInfoLen := binary.LittleEndian.Uint16(challenge[40:42])
+	targetInfoOffset := binary.LittleEndian.Uint32(challenge[44:48])
+	if int(targetInfoOffset)+int(targetInfoLen) > len(challenge) {
+		return pairs
+	}
+	blob := challenge[targetInfoOffset : targetInfoOffset+uint32(targetInfoLen)]
+	pos := 0
+	for pos+4 <= len(blob) {
+		avID := binary.LittleEndian.Uint16(blob[pos : pos+2])
+		avLen := binary.LittleEndian.Uint16(blob[pos+2 : pos+4])
+		pos += 4
+		if avID == 0 || pos+int(avLen) > len(blob) {
+			break
+		}
+		pairs[avID] = blob[pos : pos+int(avLen)]
+		pos += int(avLen)
+	}
+	return pairs
+}
+
+func utf16LEToString(b []byte) string {
+	if len(b)%2 != 0 {
+		b = b[:len(b)-1]
+	}
+	u16 := make([]uint16, len(b)/2)
+	for i := range u16 {
+		u16[i] = binary.LittleEndian.Uint16(b[i*2:])
+	}
+	return string(utf16.Decode(u16))
+}
+
+func smbHostnameQuery(ipStr string, timeout time.Duration) (result string) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = ""
+		}
+	}()
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ipStr, "445"), timeout)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+
+	negBody := make([]byte, 38)
+	binary.LittleEndian.PutUint16(negBody[0:2], 36)
+	binary.LittleEndian.PutUint16(negBody[2:4], 1)
+	binary.LittleEndian.PutUint16(negBody[36:38], 0x0202)
+	negReq := append(smb2Header(0x0000, 0), negBody...)
+	if err := smbWriteFrame(conn, negReq); err != nil {
+		return ""
+	}
+	if _, err := smbReadFrame(conn); err != nil {
+		return ""
+	}
+
+	ntlm := ntlmType1Message()
+	ssBody := make([]byte, 24+len(ntlm))
+	binary.LittleEndian.PutUint16(ssBody[0:2], 25)
+	ssBody[3] = 1
+	binary.LittleEndian.PutUint16(ssBody[12:14], 64+24)
+	binary.LittleEndian.PutUint16(ssBody[14:16], uint16(len(ntlm)))
+	copy(ssBody[24:], ntlm)
+	ssReq := append(smb2Header(0x0001, 1), ssBody...)
+	if err := smbWriteFrame(conn, ssReq); err != nil {
+		return ""
+	}
+	respBody, err := smbReadFrame(conn)
+	if err != nil || len(respBody) < 64+8 {
+		return ""
+	}
+	secOffset := binary.LittleEndian.Uint16(respBody[64+4 : 64+6])
+	secLen := binary.LittleEndian.Uint16(respBody[64+6 : 64+8])
+	if secLen == 0 || int(secOffset) >= len(respBody) || int(secOffset)+int(secLen) > len(respBody) {
+		return ""
+	}
+	challenge := respBody[secOffset : secOffset+secLen]
+	pairs := parseNTLMTargetInfo(challenge)
+	if v, ok := pairs[0x01]; ok {
+		return utf16LEToString(v)
+	}
+	if v, ok := pairs[0x03]; ok {
+		return utf16LEToString(v)
+	}
+	return ""
 }
 
 func tcpPing(ipStr string, timeout time.Duration) (bool, time.Duration) {
@@ -832,14 +1059,15 @@ func getKnownSubnets() []string {
 }
 
 type dnsDiscoveryEntry struct {
-	servers []string
-	probed  bool
+	servers  []string
+	probedAt time.Time
 }
 
 var (
-	dnsDiscoveryCache    = make(map[string]*dnsDiscoveryEntry)
-	dnsDiscoveryCacheMu  sync.Mutex
-	dnsDiscoveryMaxHosts = 256
+	dnsDiscoveryCache          = make(map[string]*dnsDiscoveryEntry)
+	dnsDiscoveryCacheMu        sync.Mutex
+	dnsDiscoveryMaxHosts       = 256
+	dnsDiscoveryEmptyResultTTL = 30 * time.Second
 )
 
 func probeDNSHost(ip string, timeout time.Duration) bool {
@@ -853,10 +1081,13 @@ func probeDNSHost(ip string, timeout time.Duration) bool {
 func discoverDNSServersInSubnet(subnet string) []string {
 	dnsDiscoveryCacheMu.Lock()
 	if entry, ok := dnsDiscoveryCache[subnet]; ok {
-		dnsDiscoveryCacheMu.Unlock()
-		return entry.servers
+		stale := len(entry.servers) == 0 && time.Since(entry.probedAt) > dnsDiscoveryEmptyResultTTL
+		if !stale {
+			dnsDiscoveryCacheMu.Unlock()
+			return entry.servers
+		}
 	}
-	dnsDiscoveryCache[subnet] = &dnsDiscoveryEntry{probed: true}
+	dnsDiscoveryCache[subnet] = &dnsDiscoveryEntry{probedAt: time.Now()}
 	dnsDiscoveryCacheMu.Unlock()
 
 	var found []string
@@ -882,7 +1113,7 @@ func discoverDNSServersInSubnet(subnet string) []string {
 				worker := func() {
 					defer wg.Done()
 					for j := range jobs {
-						if probeDNSHost(j.ip, 400*time.Millisecond) {
+						if probeDNSHost(j.ip, 700*time.Millisecond) {
 							resCh <- j.ip
 						}
 					}
@@ -910,7 +1141,7 @@ func discoverDNSServersInSubnet(subnet string) []string {
 	}
 
 	dnsDiscoveryCacheMu.Lock()
-	dnsDiscoveryCache[subnet] = &dnsDiscoveryEntry{servers: found, probed: true}
+	dnsDiscoveryCache[subnet] = &dnsDiscoveryEntry{servers: found, probedAt: time.Now()}
 	dnsDiscoveryCacheMu.Unlock()
 
 	if len(found) > 0 {
@@ -945,6 +1176,25 @@ func answersFromDNSResponse(resp *dns.Msg, qtype uint16) []DNSAnswer {
 			}
 		case *dns.CNAME:
 			ans.Data = v.Target
+		case *dns.SRV:
+			if qtype == dns.TypeSRV || qtype == dns.TypeANY {
+				ans.Data = v.Target
+				ans.Priority = v.Priority
+				ans.Weight = v.Weight
+				ans.Port = v.Port
+			}
+		case *dns.TXT:
+			if qtype == dns.TypeTXT || qtype == dns.TypeANY {
+				ans.Data = strings.Join(v.Txt, " ")
+			}
+		case *dns.NS:
+			if qtype == dns.TypeNS || qtype == dns.TypeANY {
+				ans.Data = v.Ns
+			}
+		case *dns.PTR:
+			if qtype == dns.TypePTR || qtype == dns.TypeANY {
+				ans.Data = v.Ptr
+			}
 		default:
 			continue
 		}
@@ -955,11 +1205,70 @@ func answersFromDNSResponse(resp *dns.Msg, qtype uint16) []DNSAnswer {
 	return answers
 }
 
-func queryDNSServers(domain string, qtype uint16, servers []string) []DNSAnswer {
-	msg := new(dns.Msg)
-	msg.SetQuestion(domain, qtype)
-	msg.RecursionDesired = true
+type dnsCacheEntry struct {
+	answers []DNSAnswer
+	expires time.Time
+}
 
+var (
+	dnsCacheMu sync.Mutex
+	dnsCache   = map[string]dnsCacheEntry{}
+)
+
+func dnsCacheKey(domain string, qtype uint16) string {
+	return strings.ToLower(domain) + "|" + fmt.Sprint(qtype)
+}
+
+func dnsCacheGet(domain string, qtype uint16) ([]DNSAnswer, bool) {
+	dnsCacheMu.Lock()
+	defer dnsCacheMu.Unlock()
+	e, ok := dnsCache[dnsCacheKey(domain, qtype)]
+	if !ok || time.Now().After(e.expires) {
+		return nil, false
+	}
+	return e.answers, true
+}
+
+func dnsCacheSet(domain string, qtype uint16, answers []DNSAnswer) {
+	ttl := 30 * time.Second
+	if len(answers) > 0 && answers[0].TTL > 0 {
+		ttl = time.Duration(answers[0].TTL) * time.Second
+		if ttl > 5*time.Minute {
+			ttl = 5 * time.Minute
+		}
+	}
+	dnsCacheMu.Lock()
+	defer dnsCacheMu.Unlock()
+	dnsCache[dnsCacheKey(domain, qtype)] = dnsCacheEntry{answers: answers, expires: time.Now().Add(ttl)}
+}
+
+func queryDNSServers(domain string, qtype uint16, servers []string) []DNSAnswer {
+	if cached, ok := dnsCacheGet(domain, qtype); ok {
+		return cached
+	}
+
+	type raceResult struct {
+		answers []DNSAnswer
+	}
+	resCh := make(chan raceResult, 32)
+	var wg sync.WaitGroup
+
+	fire := func(server, net string) {
+		defer wg.Done()
+		msg := new(dns.Msg)
+		msg.SetQuestion(domain, qtype)
+		msg.RecursionDesired = true
+		c := &dns.Client{Net: net, Timeout: 1500 * time.Millisecond}
+		resp, _, err := c.Exchange(msg, server)
+		if err != nil || resp == nil || resp.Rcode != dns.RcodeSuccess {
+			return
+		}
+		if answers := answersFromDNSResponse(resp, qtype); len(answers) > 0 {
+			resCh <- raceResult{answers: answers}
+		}
+	}
+
+	sent := 0
 	for _, server := range servers {
 		if server == "" {
 			continue
@@ -968,15 +1277,29 @@ func queryDNSServers(domain string, qtype uint16, servers []string) []DNSAnswer 
 		if _, _, err := net.SplitHostPort(server); err != nil {
 			server = net.JoinHostPort(strings.Trim(server, "[] "), "53")
 		}
-		for _, net := range []string{"tcp", "udp"} {
-			c := &dns.Client{Net: net, Timeout: 3 * time.Second}
-			resp, _, err := c.Exchange(msg, server)
-			if err != nil || resp == nil || resp.Rcode != dns.RcodeSuccess {
-				continue
+		for _, proto := range []string{"udp", "tcp"} {
+			for attempt := 0; attempt < 3; attempt++ {
+				wg.Add(1)
+				go fire(server, proto)
+				sent++
+				select {
+				case res := <-resCh:
+					dnsCacheSet(domain, qtype, res.answers)
+					return res.answers
+				case <-time.After(400 * time.Millisecond):
+				}
 			}
-			if answers := answersFromDNSResponse(resp, qtype); len(answers) > 0 {
-				return answers
-			}
+		}
+	}
+
+	deadline := time.After(1500 * time.Millisecond)
+	for sent > 0 {
+		select {
+		case res := <-resCh:
+			dnsCacheSet(domain, qtype, res.answers)
+			return res.answers
+		case <-deadline:
+			return nil
 		}
 	}
 	return nil
@@ -1443,7 +1766,6 @@ func main() {
 	agentKey := flag.String("k", "", "Encryption key (base64, must match server)")
 	bindAddr := flag.String("l", "0.0.0.0:9001", "Listen address (agent-bind mode)")
 	configFlag := flag.String("c", "", "Path to JSON config file")
-	wsPathFlag := flag.String("w", "/ws", "WebSocket path (must match server)")
 	background := flag.Bool("b", false, "Run agent in background (detach from terminal)")
 	verbose := flag.Bool("v", false, "Verbose logging")
 	flag.Parse()
@@ -1505,7 +1827,7 @@ func main() {
 			resolvedAddr = configServerAddr
 		}
 		fmt.Println("Running in agent mode")
-		agent(resolvedAddr, resolvedKey, *wsPathFlag, agentStop)
+		agent(resolvedAddr, resolvedKey, agentStop)
 
 	case "agent-bind":
 		resolvedKey := *agentKey

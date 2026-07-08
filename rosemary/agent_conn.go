@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -380,6 +381,7 @@ func handleMsgRegisterWS(msg Message, sourceID string, agentIP string, connID *s
 	connLock.Unlock()
 	triggerDashboardBroadcast()
 	registerAgentSubnets(registeringAgentID, registerMsg.Subnets, agentIP)
+	go autoDiscoverSubnetDNS(registeringAgentID, registerMsg.Subnets)
 	log.Printf(colorBoldGreen+"[+]"+colorReset+" Agent "+colorYellow+"%s"+colorReset+" connected with subnets: "+colorCyan+"%v"+colorReset, registeringAgentID, registerMsg.Subnets)
 	sendControlMessageToAgent(registeringAgentID, Message{ //nolint:errcheck
 		Type:            "register_ok",
@@ -472,6 +474,7 @@ func handleMsgRegisterBind(msg Message, sourceID string, agentIP string, connID 
 	connLock.Unlock()
 	triggerDashboardBroadcast()
 	registerAgentSubnets(registeringAgentID, registerMsg.Subnets, agentIP)
+	go autoDiscoverSubnetDNS(registeringAgentID, registerMsg.Subnets)
 	log.Printf(colorBoldGreen+"[+]"+colorReset+" Bind agent "+colorYellow+"%s"+colorReset+" connected with subnets: "+colorCyan+"%v"+colorReset, registeringAgentID, registerMsg.Subnets)
 	sendControlMessageToAgent(registeringAgentID, Message{ //nolint:errcheck
 		Type:            "register_ok",
@@ -479,6 +482,34 @@ func handleMsgRegisterBind(msg Message, sourceID string, agentIP string, connID 
 		OriginalAgentID: registeringAgentID,
 	})
 	go restoreAgentForwards(registeringAgentID)
+}
+
+func autoDiscoverSubnetDNS(agentID string, subnets []string) {
+	for _, subnet := range subnets {
+		if _, already := getSubnetDNSServer(subnet); already {
+			continue
+		}
+		_, ipnet, err := net.ParseCIDR(subnet)
+		if err != nil {
+			continue
+		}
+		ones, bits := ipnet.Mask.Size()
+		if bits-ones > 12 {
+			continue
+		}
+		req := PingSweepRequest{Subnet: subnet, TimeoutMs: 300, Workers: 100}
+		payload, err := json.Marshal(req)
+		if err != nil {
+			continue
+		}
+		msg := Message{
+			Type:            "ping-sweep-request",
+			Payload:         payload,
+			OriginalAgentID: "server",
+			TargetAgentID:   agentID,
+		}
+		sendControlMessageToAgent(agentID, msg) //nolint:errcheck
+	}
 }
 
 // registerAgentSubnets sets up routing/iptables for each subnet the agent owns.
@@ -736,17 +767,89 @@ func handleMsgPortScanRespBind(msg Message, sourceID string) {
 	}
 }
 
+func resolveHostnames(ips []string) map[string]string {
+	result := make(map[string]string, len(ips))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	resolver := &net.Resolver{}
+	for _, ip := range ips {
+		wg.Add(1)
+		go func(ip string) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+			defer cancel()
+			names, err := resolver.LookupAddr(ctx, ip)
+			if err != nil || len(names) == 0 {
+				return
+			}
+			mu.Lock()
+			result[ip] = strings.TrimSuffix(names[0], ".")
+			mu.Unlock()
+		}(ip)
+	}
+	wg.Wait()
+	return result
+}
+
+func resolveMissingHostnames(results []PingSweepResult) map[string]string {
+	var needLookup []string
+	for _, h := range results {
+		if h.Hostname == "" {
+			needLookup = append(needLookup, h.IP)
+		}
+	}
+	if len(needLookup) == 0 {
+		return nil
+	}
+	return resolveHostnames(needLookup)
+}
+
+func autoConfigureDiscoveredDNS(subnet string, results []PingSweepResult) string {
+	if _, already := getSubnetDNSServer(subnet); already {
+		return ""
+	}
+	for _, h := range results {
+		if !h.IsDNS {
+			continue
+		}
+		setSubnetDNSServer(subnet, h.IP)
+		name := h.Hostname
+		if name == "" {
+			name = h.IP
+		}
+		log.Printf("[discover] auto-configured DNS for subnet %s -> %s (%s)", subnet, h.IP, name)
+		appendServerLog(fmt.Sprintf("[+] Auto-detected DNS server %s (%s) for subnet %s; DNS override configured automatically", h.IP, name, subnet))
+		return fmt.Sprintf("Auto-detected DNS server %s (%s); DNS override configured automatically.\n", h.IP, name)
+	}
+	return ""
+}
+
 func handleMsgPingSweepRespWS(msg Message) {
 	var resp PingSweepResponse
 	if err := json.Unmarshal(msg.Payload, &resp); err != nil {
 		log.Printf("error unmarshalling ping-sweep-response: %v", err)
 		return
 	}
+	dnsFallback := resolveMissingHostnames(resp.Results)
 	var output strings.Builder
-	fmt.Fprintf(&output, colorBoldCyan+"[*]"+colorReset+" Discover %s%s%s — "+colorBoldWhite+"%d hosts up"+colorReset+":\n",
+	fmt.Fprintf(&output, colorBoldCyan+"[*]"+colorReset+" Discover %s%s%s: "+colorBoldWhite+"%d hosts up"+colorReset+":\n",
 		colorYellow, resp.Subnet, colorReset, len(resp.Results))
 	for _, h := range resp.Results {
-		fmt.Fprintf(&output, "  "+colorGreen+"%-18s"+colorReset+"  "+colorDim+"%.1f ms"+colorReset+"\n", h.IP, float64(h.RTT))
+		hostname := h.Hostname
+		if hostname == "" {
+			hostname = dnsFallback[h.IP]
+		}
+		if hostname == "" {
+			hostname = "-"
+		}
+		dnsTag := ""
+		if h.IsDNS {
+			dnsTag = colorDim + " [dns]" + colorReset
+		}
+		fmt.Fprintf(&output, "  "+colorGreen+"%-18s"+colorReset+"  "+colorCyan+"%-30s"+colorReset+"  "+colorDim+"%.1f ms"+colorReset+"%s\n", h.IP, hostname, float64(h.RTT), dnsTag)
+	}
+	if note := autoConfigureDiscoveredDNS(resp.Subnet, resp.Results); note != "" {
+		fmt.Fprintf(&output, colorBoldGreen+"[+]"+colorReset+" %s", note)
 	}
 	broadcastToListeners(output.String())
 }
@@ -756,10 +859,25 @@ func handleMsgPingSweepRespBind(msg Message) {
 	if err := json.Unmarshal(msg.Payload, &resp); err != nil {
 		return
 	}
+	dnsFallback := resolveMissingHostnames(resp.Results)
 	var output strings.Builder
 	fmt.Fprintf(&output, "Ping sweep on %s (%d hosts up):\n", resp.Subnet, len(resp.Results))
 	for _, h := range resp.Results {
-		fmt.Fprintf(&output, "  %s  (%.1f ms)\n", h.IP, float64(h.RTT))
+		hostname := h.Hostname
+		if hostname == "" {
+			hostname = dnsFallback[h.IP]
+		}
+		if hostname == "" {
+			hostname = "-"
+		}
+		dnsTag := ""
+		if h.IsDNS {
+			dnsTag = " [dns]"
+		}
+		fmt.Fprintf(&output, "  %s  %s  (%.1f ms)%s\n", h.IP, hostname, float64(h.RTT), dnsTag)
+	}
+	if note := autoConfigureDiscoveredDNS(resp.Subnet, resp.Results); note != "" {
+		fmt.Fprintf(&output, "[+] %s", note)
 	}
 	broadcastToListeners(output.String())
 }

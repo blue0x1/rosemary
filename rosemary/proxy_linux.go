@@ -1298,7 +1298,7 @@ func handleDNSRequest(w dns.ResponseWriter, req *dns.Msg) {
 		fallbackChan <- queryFallbackDNS(q.Name, q.Qtype)
 	}()
 
-	deadline := time.NewTimer(5 * time.Second)
+	deadline := time.NewTimer(13 * time.Second)
 	defer deadline.Stop()
 
 	var bestResponse *DNSResponseMessage
@@ -1366,6 +1366,14 @@ func buildAndSendDNSReplyLinux(w dns.ResponseWriter, req *dns.Msg, bestResponse 
 			rr = &dns.AAAA{Hdr: hdr, AAAA: net.ParseIP(ans.Data)}
 		case dns.TypeCNAME:
 			rr = &dns.CNAME{Hdr: hdr, Target: ans.Data}
+		case dns.TypeSRV:
+			rr = &dns.SRV{Hdr: hdr, Priority: ans.Priority, Weight: ans.Weight, Port: ans.Port, Target: ans.Data}
+		case dns.TypeTXT:
+			rr = &dns.TXT{Hdr: hdr, Txt: []string{ans.Data}}
+		case dns.TypeNS:
+			rr = &dns.NS{Hdr: hdr, Ns: ans.Data}
+		case dns.TypePTR:
+			rr = &dns.PTR{Hdr: hdr, Ptr: ans.Data}
 		}
 		if rr != nil {
 			reply.Answer = append(reply.Answer, rr)
@@ -1728,7 +1736,7 @@ func stopSocksProxy(id string, out *strings.Builder) {
 	fmt.Fprintf(out, " [+] SOCKS5 %s stopped\n", id)
 }
 func notifyShutdownSignals(c chan<- os.Signal) {
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 }
 
 func addIcmpIptablesRule(subnet string) error {

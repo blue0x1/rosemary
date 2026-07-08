@@ -100,7 +100,7 @@ func readBindFrame(conn net.Conn) ([]byte, error) {
 	return data, nil
 }
 
-func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan struct{}) {
+func agent(serverAddr string, keyBase64 string, agentStop <-chan struct{}) {
 	key, err := decodeKey(keyBase64)
 	if err != nil {
 		log.Fatalf("Invalid encryption key (must be 32-byte base64): %v", err)
@@ -129,8 +129,6 @@ func agent(serverAddr string, keyBase64 string, wsPath string, agentStop <-chan 
 	}
 
 	var persistedID string
-
-	_ = wsPath
 
 	for {
 		logVerbose("Agent: connecting to quic://%s", serverAddr)
