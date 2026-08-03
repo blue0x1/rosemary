@@ -1,6 +1,6 @@
 # Rosemary
 
-**Cross-platform kernel-level pivoting platform over QUIC. No TUN/TAP. No proxychains. No proxy settings.** <br>
+**Transparent network pivoting and tunneling over QUIC. Cross-platform, no TUN/TAP, no proxychains, no proxy settings.** <br>
 [![Docs](https://img.shields.io/badge/Documentation-GitBook-blue)](https://rosemary-2.gitbook.io)
 ![Go Version](https://img.shields.io/badge/Go-1.25.0-00ADD8?logo=go)
 [![Go Report Card](https://goreportcard.com/badge/github.com/blue0x1/rosemary/rosemary)](https://goreportcard.com/report/github.com/blue0x1/rosemary/rosemary)
